@@ -42,6 +42,10 @@ class ParserRegistry:
             # 更新扩展名映射
             for ext in parser.supported_extensions:
                 ext_lower = ext.lower()
+                # 统一去掉扩展名前的点号
+                if ext_lower.startswith('.'):
+                    ext_lower = ext_lower[1:]
+
                 if ext_lower not in self._extension_map:
                     self._extension_map[ext_lower] = []
 
@@ -75,6 +79,10 @@ class ParserRegistry:
             # 从扩展名映射中移除
             for ext in parser.supported_extensions:
                 ext_lower = ext.lower()
+                # 统一去掉扩展名前的点号
+                if ext_lower.startswith('.'):
+                    ext_lower = ext_lower[1:]
+
                 if ext_lower in self._extension_map:
                     if parser_name in self._extension_map[ext_lower]:
                         self._extension_map[ext_lower].remove(parser_name)

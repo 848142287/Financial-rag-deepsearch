@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from datetime import datetime
 import json
+from pathlib import Path
 
 # 核心服务导入
 from app.services.real_qwen_service import RealQwenService, RealQwenConfig
@@ -140,20 +141,55 @@ class CoreServiceIntegrator:
             await self._services['minio'].upload_file(file_path, file_content)
             result['stages']['upload'] = {'status': 'completed', 'path': file_path}
 
-            # 阶段2: 高级PDF解析
-            logger.info("📄 阶段2: 高级PDF解析...")
-            pdf_parser = get_pdf_parser()
-            pdf_result = await pdf_parser.parse_pdf(file_content, filename)
+            # 阶段2: 文档解析 - 根据文件类型路由到相应的解析器
+            logger.info(f"📄 阶段2: 文档解析 ({filename})...")
 
-            # 使用解析结果 - 安全地获取内容
-            content_data = pdf_result.get('content', {})
-            text_content = content_data.get('raw_text') or ''
-            markdown_content = content_data.get('markdown') or ''
-            structured_content = content_data.get('structured') or {}
+            # 获取文件扩展名
+            file_ext = Path(filename).suffix.lower()
+
+            # 根据文件类型选择解析器
+            if file_ext in ['.xlsx', '.xls']:
+                # Excel文件 - 使用EnhancedExcelParser
+                text_content, markdown_content = await self._parse_excel_document(file_content, filename)
+                pdf_result = {'method': 'EnhancedExcelParser', 'pages_processed': 1}
+            elif file_ext in ['.docx']:
+                # Word文件 - 使用EnhancedDocParser
+                text_content, markdown_content = await self._parse_docx_document(file_content, filename)
+                pdf_result = {'method': 'EnhancedDocParser', 'pages_processed': 1}
+            elif file_ext in ['.pptx', '.ppt']:
+                # PowerPoint文件 - 使用PPTParserWrapper
+                text_content, markdown_content = await self._parse_pptx_document(file_content, filename)
+                pdf_result = {'method': 'PPTParserWrapper', 'pages_processed': 1}
+            elif file_ext in ['.md', '.markdown']:
+                # Markdown文件 - 使用MarkdownParser
+                text_content, markdown_content = await self._parse_markdown_document(file_content, filename)
+                pdf_result = {'method': 'MarkdownParser', 'pages_processed': 1}
+            elif file_ext in ['.pdf']:
+                # PDF文件 - 使用PDF解析器
+                pdf_parser = get_pdf_parser()
+                pdf_result_data = await pdf_parser.parse_pdf(file_content, filename)
+
+                # 使用解析结果 - 安全地获取内容
+                content_data = pdf_result_data.get('content', {})
+                text_content = content_data.get('raw_text') or ''
+                markdown_content = content_data.get('markdown') or ''
+                pdf_result = pdf_result_data
+            else:
+                # 未知文件类型，尝试使用PDF解析器作为fallback
+                logger.warning(f"未知文件类型 {file_ext}，尝试使用PDF解析器")
+                pdf_parser = get_pdf_parser()
+                pdf_result_data = await pdf_parser.parse_pdf(file_content, filename)
+
+                content_data = pdf_result_data.get('content', {})
+                text_content = content_data.get('raw_text') or ''
+                markdown_content = content_data.get('markdown') or ''
+                pdf_result = pdf_result_data
+
+            structured_content = {}  # 非PDF文件暂时不使用structured_content
 
             # 检查解析是否成功
             if not text_content and not markdown_content:
-                error_msg = f"PDF解析失败: 未提取到任何内容"
+                error_msg = f"文档解析失败: 未提取到任何内容"
                 logger.error(error_msg)
                 result['stages']['parsing'] = {
                     'status': 'failed',
@@ -901,6 +937,168 @@ class CoreServiceIntegrator:
             'max_workers': self.config.max_workers,
             'timeout': self.config.timeout
         }
+
+    async def _parse_excel_document(self, file_content: bytes, filename: str) -> tuple:
+        """使用EnhancedExcelParser解析Excel文档"""
+        import tempfile
+        import os
+
+        temp_path = None
+        try:
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp_file:
+                tmp_file.write(file_content)
+                temp_path = tmp_file.name
+
+            logger.info(f"使用EnhancedExcelParser解析Excel文档: {filename}")
+
+            # 使用Excel解析器
+            from app.services.parsers.enhanced_excel_parser import EnhancedExcelParser
+
+            parser = EnhancedExcelParser()
+            parse_result = await parser.parse(temp_path, filename=filename)
+
+            # 清理临时文件
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+            if parse_result.success:
+                # 返回文本内容和markdown内容
+                return parse_result.content, parse_result.content  # Excel解析器返回的是文本内容
+            else:
+                error_msg = parse_result.error_message or "未知错误"
+                logger.error(f"Excel解析失败: {error_msg}")
+                return "", f"# Excel解析失败\n\n错误: {error_msg}"
+
+        except Exception as e:
+            logger.error(f"Excel文档解析异常: {e}")
+            # 清理临时文件
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+            return "", f"# Excel文档解析异常\n\n错误: {str(e)}"
+
+    async def _parse_docx_document(self, file_content: bytes, filename: str) -> tuple:
+        """使用EnhancedDocParser解析Word文档"""
+        import tempfile
+        import os
+
+        temp_path = None
+        try:
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
+                tmp_file.write(file_content)
+                temp_path = tmp_file.name
+
+            logger.info(f"使用EnhancedDocParser解析Word文档: {filename}")
+
+            # 使用Word解析器
+            from app.services.parsers.enhanced_doc_parser import EnhancedDocParser
+
+            parser = EnhancedDocParser()
+            parse_result = await parser.parse(temp_path, filename=filename)
+
+            # 清理临时文件
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+            if parse_result.success:
+                return parse_result.content, parse_result.content
+            else:
+                error_msg = parse_result.error_message or "未知错误"
+                logger.error(f"Word解析失败: {error_msg}")
+                return "", f"# Word解析失败\n\n错误: {error_msg}"
+
+        except Exception as e:
+            logger.error(f"Word文档解析异常: {e}")
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+            return "", f"# Word文档解析异常\n\n错误: {str(e)}"
+
+    async def _parse_pptx_document(self, file_content: bytes, filename: str) -> tuple:
+        """使用PPTParserWrapper解析PowerPoint文档"""
+        import tempfile
+        import os
+
+        temp_path = None
+        try:
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_file:
+                tmp_file.write(file_content)
+                temp_path = tmp_file.name
+
+            logger.info(f"使用PPTParserWrapper解析PowerPoint文档: {filename}")
+
+            # 使用PowerPoint解析器
+            from app.services.parsers.ppt_parser_wrapper import PPTParserWrapper
+
+            parser = PPTParserWrapper()
+            parse_result = await parser.parse(temp_path, filename=filename)
+
+            # 清理临时文件
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+            if parse_result.success:
+                return parse_result.content, parse_result.content
+            else:
+                error_msg = parse_result.error_message or "未知错误"
+                logger.error(f"PowerPoint解析失败: {error_msg}")
+                return "", f"# PowerPoint解析失败\n\n错误: {error_msg}"
+
+        except Exception as e:
+            logger.error(f"PowerPoint文档解析异常: {e}")
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+            return "", f"# PowerPoint文档解析异常\n\n错误: {str(e)}"
+
+    async def _parse_markdown_document(self, file_content: bytes, filename: str) -> tuple:
+        """使用MarkdownParser解析Markdown文档"""
+        import tempfile
+        import os
+
+        temp_path = None
+        try:
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.md') as tmp_file:
+                tmp_file.write(file_content)
+                temp_path = tmp_file.name
+
+            logger.info(f"使用MarkdownParser解析Markdown文档: {filename}")
+
+            # 使用Markdown解析器
+            from app.services.parsers.markdown_parser import MarkdownParser
+
+            parser = MarkdownParser()
+            parse_result = await parser.parse(temp_path, filename=filename)
+
+            # 清理临时文件
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+            if parse_result.success:
+                return parse_result.content, parse_result.content
+            else:
+                error_msg = parse_result.error_message or "未知错误"
+                logger.error(f"Markdown解析失败: {error_msg}")
+                return "", f"# Markdown解析失败\n\n错误: {error_msg}"
+
+        except Exception as e:
+            logger.error(f"Markdown文档解析异常: {e}")
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+            return "", f"# Markdown文档解析异常\n\n错误: {str(e)}"
 
 
 # 全局服务整合器实例

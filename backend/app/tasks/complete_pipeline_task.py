@@ -71,7 +71,7 @@ def download_file_from_minio(file_path: str) -> bytes:
         raise
 
 def multimodal_parse_document(file_content: bytes, filename: str, document_id: str):
-    """使用PDF解析器解析文档 - 终极防护版本"""
+    """使用文件类型特定的解析器解析文档 - 修复版本"""
 
     # 终极输入验证
     if not file_content:
@@ -86,12 +86,31 @@ def multimodal_parse_document(file_content: bytes, filename: str, document_id: s
         filename = f"document_{document_id}"
 
     try:
-        # 直接使用终极fallback解析器，跳过可能有问题的PDFParser
-        logger.info(f"使用终极解析器处理文档: {filename}, 大小: {len(file_content)} bytes")
-        return fallback_parse(file_content, filename, document_id)
+        # 获取文件扩展名
+        file_ext = Path(filename).suffix.lower()
+
+        logger.info(f"路由文档解析: 文件名={filename}, 扩展名={file_ext}, 大小={len(file_content)} bytes")
+
+        # 根据文件扩展名路由到相应的解析器
+        if file_ext in ['.xlsx', '.xls']:
+            return parse_excel_document(file_content, filename, document_id)
+        elif file_ext in ['.docx']:
+            return parse_docx_document(file_content, filename, document_id)
+        elif file_ext in ['.pptx', '.ppt']:
+            return parse_pptx_document(file_content, filename, document_id)
+        elif file_ext in ['.md', '.markdown']:
+            return parse_markdown_document(file_content, filename, document_id)
+        elif file_ext in ['.pdf']:
+            # PDF文件使用现有的fallback解析器
+            logger.info(f"使用PDF解析器处理: {filename}")
+            return fallback_parse(file_content, filename, document_id)
+        else:
+            # 未知文件类型，尝试使用PDF解析器作为fallback
+            logger.warning(f"未知文件类型 {file_ext}，尝试使用通用解析器: {filename}")
+            return fallback_parse(file_content, filename, document_id)
 
     except Exception as e:
-        logger.error(f"终极解析器异常: {e}")
+        logger.error(f"文档路由解析异常: {e}")
         # 终极的终极fallback
         try:
             return {
@@ -114,8 +133,232 @@ def multimodal_parse_document(file_content: bytes, filename: str, document_id: s
                 'metadata': {'parser': 'emergency_fallback', 'success': True}
             }
 
+def parse_excel_document(file_content: bytes, filename: str, document_id: str):
+    """使用EnhancedExcelParser解析Excel文档"""
+    import tempfile
+    import os
+
+    temp_path = None
+    try:
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp_file:
+            tmp_file.write(file_content)
+            temp_path = tmp_file.name
+
+        logger.info(f"使用EnhancedExcelParser解析Excel文档: {filename}")
+
+        # 使用Excel解析器
+        from app.services.parsers.enhanced_excel_parser import EnhancedExcelParser
+
+        parser = EnhancedExcelParser()
+        parse_result = run_async(parser.parse(temp_path, filename=filename))
+
+        # 转换ParseResult到统一格式
+        if parse_result.success:
+            return {
+                'content': [{'text': parse_result.content, 'type': 'text'}],
+                'metadata': {
+                    'parser': 'EnhancedExcelParser',
+                    'file_size': len(file_content),
+                    'total_blocks': 1,
+                    'success': True,
+                    **parse_result.metadata
+                }
+            }
+        else:
+            raise Exception(f"Excel解析失败: {parse_result.error_message}")
+
+    except Exception as e:
+        logger.error(f"Excel文档解析异常: {e}")
+        # 返回fallback结果
+        return {
+            'content': [{'text': f"Excel文档 {filename} 解析失败: {str(e)}", 'type': 'text'}],
+            'metadata': {
+                'parser': 'EnhancedExcelParser',
+                'file_size': len(file_content),
+                'success': False,
+                'error': str(e)
+            }
+        }
+    finally:
+        # 清理临时文件
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+
+
+def parse_docx_document(file_content: bytes, filename: str, document_id: str):
+    """使用EnhancedDocParser解析Word文档"""
+    import tempfile
+    import os
+
+    temp_path = None
+    try:
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
+            tmp_file.write(file_content)
+            temp_path = tmp_file.name
+
+        logger.info(f"使用EnhancedDocParser解析Word文档: {filename}")
+
+        # 使用Word解析器
+        from app.services.parsers.enhanced_doc_parser import EnhancedDocParser
+
+        parser = EnhancedDocParser()
+        parse_result = run_async(parser.parse(temp_path, filename=filename))
+
+        # 转换ParseResult到统一格式
+        if parse_result.success:
+            return {
+                'content': [{'text': parse_result.content, 'type': 'text'}],
+                'metadata': {
+                    'parser': 'EnhancedDocParser',
+                    'file_size': len(file_content),
+                    'total_blocks': 1,
+                    'success': True,
+                    **parse_result.metadata
+                }
+            }
+        else:
+            raise Exception(f"Word解析失败: {parse_result.error_message}")
+
+    except Exception as e:
+        logger.error(f"Word文档解析异常: {e}")
+        # 返回fallback结果
+        return {
+            'content': [{'text': f"Word文档 {filename} 解析失败: {str(e)}", 'type': 'text'}],
+            'metadata': {
+                'parser': 'EnhancedDocParser',
+                'file_size': len(file_content),
+                'success': False,
+                'error': str(e)
+            }
+        }
+    finally:
+        # 清理临时文件
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+
+
+def parse_pptx_document(file_content: bytes, filename: str, document_id: str):
+    """使用PPTParserWrapper解析PowerPoint文档"""
+    import tempfile
+    import os
+
+    temp_path = None
+    try:
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_file:
+            tmp_file.write(file_content)
+            temp_path = tmp_file.name
+
+        logger.info(f"使用PPTParserWrapper解析PowerPoint文档: {filename}")
+
+        # 使用PowerPoint解析器
+        from app.services.parsers.ppt_parser_wrapper import PPTParserWrapper
+
+        parser = PPTParserWrapper()
+        parse_result = run_async(parser.parse(temp_path, filename=filename))
+
+        # 转换ParseResult到统一格式
+        if parse_result.success:
+            return {
+                'content': [{'text': parse_result.content, 'type': 'text'}],
+                'metadata': {
+                    'parser': 'PPTParserWrapper',
+                    'file_size': len(file_content),
+                    'total_blocks': 1,
+                    'success': True,
+                    **parse_result.metadata
+                }
+            }
+        else:
+            raise Exception(f"PowerPoint解析失败: {parse_result.error_message}")
+
+    except Exception as e:
+        logger.error(f"PowerPoint文档解析异常: {e}")
+        # 返回fallback结果
+        return {
+            'content': [{'text': f"PowerPoint文档 {filename} 解析失败: {str(e)}", 'type': 'text'}],
+            'metadata': {
+                'parser': 'PPTParserWrapper',
+                'file_size': len(file_content),
+                'success': False,
+                'error': str(e)
+            }
+        }
+    finally:
+        # 清理临时文件
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+
+
+def parse_markdown_document(file_content: bytes, filename: str, document_id: str):
+    """使用MarkdownParser解析Markdown文档"""
+    import tempfile
+    import os
+
+    temp_path = None
+    try:
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.md') as tmp_file:
+            tmp_file.write(file_content)
+            temp_path = tmp_file.name
+
+        logger.info(f"使用MarkdownParser解析Markdown文档: {filename}")
+
+        # 使用Markdown解析器
+        from app.services.parsers.markdown_parser import MarkdownParser
+
+        parser = MarkdownParser()
+        parse_result = run_async(parser.parse(temp_path, filename=filename))
+
+        # 转换ParseResult到统一格式
+        if parse_result.success:
+            return {
+                'content': [{'text': parse_result.content, 'type': 'text'}],
+                'metadata': {
+                    'parser': 'MarkdownParser',
+                    'file_size': len(file_content),
+                    'total_blocks': 1,
+                    'success': True,
+                    **parse_result.metadata
+                }
+            }
+        else:
+            raise Exception(f"Markdown解析失败: {parse_result.error_message}")
+
+    except Exception as e:
+        logger.error(f"Markdown文档解析异常: {e}")
+        # 返回fallback结果
+        return {
+            'content': [{'text': f"Markdown文档 {filename} 解析失败: {str(e)}", 'type': 'text'}],
+            'metadata': {
+                'parser': 'MarkdownParser',
+                'file_size': len(file_content),
+                'success': False,
+                'error': str(e)
+            }
+        }
+    finally:
+        # 清理临时文件
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+
+
 def fallback_parse(file_content: bytes, filename: str, document_id: str):
-    """基础解析作为fallback - 100%成功率保障版本"""
+    """基础解析作为fallback - 100%成功率保障版本（增加OCR处理扫描版PDF）"""
     content_text = ""
 
     # 终极输入验证和默认值
@@ -132,6 +375,8 @@ def fallback_parse(file_content: bytes, filename: str, document_id: str):
 
     if not filename:
         filename = f"unknown_document_{document_id}"
+
+    is_scanned_pdf = False  # 标记是否为扫描版PDF
 
     try:
         # 第一层：PyPDF2解析
@@ -150,10 +395,25 @@ def fallback_parse(file_content: bytes, filename: str, document_id: str):
                 continue
 
         if content_text.strip():
-            logger.info(f"Fallback PDF解析完成: {page_count}页, {len(content_text)}字符")
+            # 检查文本质量 - 判断是否为扫描版PDF
+            chinese_chars = sum(1 for c in content_text if '\u4e00' <= c <= '\u9fff')
+            total_chars = len(content_text.strip())
+            chinese_ratio = chinese_chars / total_chars if total_chars > 0 else 0
+
+            # 如果中文字符占比<5%或总字符<50，可能是扫描版PDF
+            if chinese_ratio < 0.05 or total_chars < 50:
+                logger.warning(f"检测到可能的扫描版PDF: 中文占比={chinese_ratio:.2%}, 总字符={total_chars}")
+                is_scanned_pdf = True
+            else:
+                logger.info(f"Fallback PDF解析完成: {page_count}页, {len(content_text)}字符")
+        else:
+            # 完全没有提取到文本，肯定是扫描版
+            logger.warning("PyPDF2未提取到任何文本，可能是扫描版PDF")
+            is_scanned_pdf = True
 
     except Exception as e:
         logger.warning(f"Fallback PDF解析失败: {e}")
+        is_scanned_pdf = True  # 出错也可能是扫描版
 
         # 第二层：尝试pdfplumber
         try:
@@ -174,26 +434,41 @@ def fallback_parse(file_content: bytes, filename: str, document_id: str):
         except Exception as pdfplumber_error:
             logger.warning(f"pdfplumber解析失败: {pdfplumber_error}")
 
-            # 第三层：文本解码尝试
-            try:
-                # 尝试UTF-8解码
-                content_text = file_content.decode('utf-8', errors='ignore')
-                if not content_text.strip():
-                    # 尝试GBK解码
-                    content_text = file_content.decode('gbk', errors='ignore')
-                if not content_text.strip():
-                    # 尝试Latin-1解码
-                    content_text = file_content.decode('latin-1', errors='ignore')
+    # 第三层：OCR处理扫描版PDF
+    if is_scanned_pdf or not content_text.strip():
+        logger.info(f"使用Qwen-VL-OCR处理扫描版PDF: {filename}")
+        try:
+            ocr_text = run_async(ocr_parse_pdf(file_content, filename))
+            if ocr_text and ocr_text.strip():
+                content_text = ocr_text
+                logger.info(f"OCR解析成功: {len(content_text)}字符")
+            else:
+                logger.warning("OCR未提取到文本")
+        except Exception as ocr_error:
+            logger.error(f"OCR解析失败: {ocr_error}")
 
-                if content_text.strip():
-                    logger.info(f"文本解码成功: {len(content_text)}字符")
+    # 第四层：文本解码尝试（仅当没有OCR结果时）
+    if not content_text.strip():
+        try:
+            # 尝试UTF-8解码
+            content_text = file_content.decode('utf-8', errors='ignore')
+            if not content_text.strip():
+                # 尝试GBK解码
+                content_text = file_content.decode('gbk', errors='ignore')
+            if not content_text.strip():
+                # 尝试Latin-1解码
+                content_text = file_content.decode('latin-1', errors='ignore')
 
-            except Exception as decode_error:
-                logger.warning(f"所有解码尝试失败: {decode_error}")
+            if content_text.strip():
+                logger.info(f"文本解码成功: {len(content_text)}字符")
 
-                # 第四层：创建有意义的占位内容
-                file_size = len(file_content)
-                content_text = f"""金融文档解析报告
+        except Exception as decode_error:
+            logger.warning(f"所有解码尝试失败: {decode_error}")
+
+    # 第五层：创建有意义的占位内容（仅当完全失败时）
+    if not content_text.strip():
+        file_size = len(file_content)
+        content_text = f"""金融文档解析报告
 
 文档名称: {filename}
 文档ID: {document_id}
@@ -215,6 +490,49 @@ def fallback_parse(file_content: bytes, filename: str, document_id: str):
         content_text = f"文档 {filename} 内容为空或无法解析"
 
     return _create_safe_result(content_text, filename)
+
+
+async def ocr_parse_pdf(file_content: bytes, filename: str) -> str:
+    """使用OCR服务解析PDF文档"""
+    from app.services.ocr_service import get_ocr_service
+
+    ocr_service = get_ocr_service()
+
+    # 获取PDF页数
+    import PyPDF2
+    pdf_file = io.BytesIO(file_content)
+    pdf_reader = PyPDF2.PdfReader(pdf_file)
+    page_count = len(pdf_reader.pages)
+
+    logger.info(f"开始OCR解析: {filename}, 共{page_count}页")
+
+    # 限制处理的页数（最多处理前5页，避免超时）
+    max_pages = min(page_count, 5)
+
+    try:
+        # 批量OCR处理
+        results = await ocr_service.batch_extract_from_pdf(
+            file_content,
+            pages=list(range(max_pages)),
+            max_concurrent=3  # 限制并发，避免API限流
+        )
+
+        # 合并所有页面的文本
+        full_text = ""
+        for i, result in enumerate(results):
+            if result.get('success') and result.get('text'):
+                page_text = result['text']
+                full_text += f"\n=== 第{i+1}页 ===\n{page_text}\n"
+                logger.info(f"第{i+1}页OCR成功: {len(page_text)}字符")
+            else:
+                error_msg = result.get('error', '未知错误')
+                logger.warning(f"第{i+1}页OCR失败: {error_msg}")
+
+        return full_text.strip()
+
+    except Exception as e:
+        logger.error(f"OCR批量处理失败: {e}")
+        raise
 
 def _create_safe_result(content_text: str, filename: str):
     """创建安全的解析结果 - 100%成功率保障版本"""

@@ -1,6 +1,29 @@
 """
 Neo4j图数据库服务
+
+⚠️  **DEPRECATED** - 此服务已废弃
+
+请使用新的统一知识图谱服务：
+- `app.services.unified_knowledge_graph.UnifiedKnowledgeGraphService`
+- `app.services.fusion_service.fusion_document_service`
+
+迁移原因：
+- 旧服务存在实体重复、ID冲突问题
+- 缺少跨文档实体消歧功能
+- 固定置信度，无法动态调整
+
+迁移指南：请参阅 `docs/代码迁移指南.md`
+
+此文件保留用于向后兼容，将在未来版本中移除。
 """
+
+import warnings
+warnings.warn(
+    "Neo4jService 已废弃，请使用 UnifiedKnowledgeGraphService。"
+    "详见 docs/代码迁移指南.md",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 from typing import List, Dict, Any, Optional, Tuple
 from neo4j import GraphDatabase, Driver

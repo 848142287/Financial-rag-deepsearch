@@ -165,6 +165,13 @@ api_router.include_router(
     tags=["RAG问答"]
 )
 
+# 16. 监控服务 (NEW! - 系统监控和自动触发)
+from app.api.endpoints import monitoring
+api_router.include_router(
+    monitoring.router,
+    tags=["系统监控"]
+)
+
 # 健康检查端点
 @api_router.get("/health-check")
 async def health_check():

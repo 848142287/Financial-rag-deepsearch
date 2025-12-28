@@ -17,6 +17,7 @@ from sqlalchemy import and_, or_
 from app.models.document import DocumentChunk
 from app.models.synchronization import DocumentSync, VectorSync, SyncStatus, SyncLog
 from app.services.sync_state_machine import SyncStateMachine
+from app.core.vector_config import get_dimension, vector_config
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,10 @@ class VectorDBClient:
     def __init__(self, config: Dict):
         self.config = config
         self.client = None
-        self.collection_name = config.get("collection_name", "financial_documents")
+        self.collection_name = config.get("collection_name", vector_config.collection_name)
+        # 使用统一的向量维度配置
+        self.embedding_dim = config.get("embedding_dim", get_dimension())
+        logger.info(f"VectorDBClient initialized with dimension: {self.embedding_dim}")
 
     async def connect(self):
         """连接向量数据库"""
@@ -52,23 +56,38 @@ class VectorDBClient:
 
             if utility.has_collection(self.collection_name):
                 self.collection = Collection(self.collection_name)
+                # 验证现有集合的维度是否匹配
+                schema = self.collection.schema
+                for field in schema.fields:
+                    if field.name == "embedding":
+                        existing_dim = field.params.get("dim")
+                        if existing_dim != self.embedding_dim:
+                            logger.warning(
+                                f"Collection dimension mismatch! "
+                                f"Existing: {existing_dim}, Expected: {self.embedding_dim}. "
+                                f"Please recreate collection."
+                            )
+                        break
                 logger.info(f"Collection {self.collection_name} already exists")
                 return True
 
-            # 定义字段
+            # 定义字段 - 使用统一的向量维度
             fields = [
                 FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=100),
                 FieldSchema(name="document_id", dtype=DataType.VARCHAR, max_length=100),
                 FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, max_length=100),
                 FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=8192),
                 FieldSchema(name="metadata", dtype=DataType.JSON),
-                FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=1536)
+                FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self.embedding_dim)
             ]
 
             # 创建集合
-            schema = CollectionSchema(fields, f"Financial documents collection")
+            schema = CollectionSchema(
+                fields,
+                f"Financial documents collection (dimension: {self.embedding_dim})"
+            )
             self.collection = Collection(self.collection_name, schema)
-            logger.info(f"Created collection {self.collection_name}")
+            logger.info(f"Created collection {self.collection_name} with dimension {self.embedding_dim}")
             return True
         except Exception as e:
             logger.error(f"Failed to create collection: {str(e)}")

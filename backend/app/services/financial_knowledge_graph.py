@@ -1,7 +1,33 @@
 """
 金融知识图谱构建器
 构建和维护金融领域的知识图谱，支持实体关系抽取和图谱推理
+
+⚠️  **DEPRECATED** - 此服务已废弃
+
+请使用新的增强知识图谱服务：
+- `app.services.knowledge.deep_graph_extractor.DeepKnowledgeGraphExtractor`
+- `app.services.unified_knowledge_graph.UnifiedKnowledgeGraphService`
+- `app.services.fusion_service.fusion_document_service`
+
+迁移原因：
+- 使用 NetworkX 内存图谱，无法持久化大规模数据
+- 实体ID包含文档ID，导致跨文档实体重复
+- 缺少LLM增强提取和多源数据融合
+- 无实体消歧和质量验证机制
+
+迁移指南：请参阅 `docs/代码迁移指南.md`
+
+此文件保留用于向后兼容，将在未来版本中移除。
 """
+
+import warnings
+warnings.warn(
+    "FinancialKnowledgeGraph 已废弃，请使用 DeepKnowledgeGraphExtractor "
+    "和 UnifiedKnowledgeGraphService。"
+    "详见 docs/代码迁移指南.md",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 import os
 import logging

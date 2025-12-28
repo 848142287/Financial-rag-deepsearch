@@ -204,11 +204,11 @@ class QwenOCRService:
         """
         try:
             # 将PDF页面转换为图片
-            from pdf2image import convert_pdf_bytes_to_images
+            from pdf2image import convert_from_bytes
 
             # 转换指定页面
             images = await asyncio.to_thread(
-                convert_pdf_bytes_to_images,
+                convert_from_bytes,
                 pdf_bytes,
                 dpi=200,
                 first_page=page_num + 1,

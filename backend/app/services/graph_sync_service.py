@@ -1,7 +1,31 @@
 """
 图谱库同步服务
 负责将实体关系数据同步到图数据库
+
+⚠️  **DEPRECATED** - 此服务已废弃
+
+请使用新的图数据库客户端：
+- `app.services.knowledge.graph_db_client.GraphDBClient` (完整实现)
+- `app.services.unified_knowledge_graph.UnifiedKnowledgeGraphService`
+
+迁移原因：
+- 原始 GraphDBClient 所有方法都是空实现（pass）
+- 缺少实际的图数据库操作
+- 无质量验证和冲突检测
+
+迁移指南：请参阅 `docs/代码迁移指南.md`
+
+此文件保留用于向后兼容，将在未来版本中移除。
 """
+
+import warnings
+warnings.warn(
+    "GraphSyncService 已废弃，请使用新的 GraphDBClient "
+    "和 UnifiedKnowledgeGraphService。"
+    "详见 docs/代码迁移指南.md",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 import asyncio
 import uuid

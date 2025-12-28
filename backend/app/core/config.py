@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     chunk_size: int = 512
     chunk_overlap: int = 50
     max_chunks_per_document: int = 1000
-    supported_file_types: List[str] = ["pdf", "docx", "xlsx", "txt", "md", "ppt", "pptx"]
+    supported_file_types: List[str] = ["pdf", "doc", "docx", "xlsx", "txt", "md", "ppt", "pptx"]
 
     # Celery配置
     celery_broker_url: str = "redis://redis:6379/0"

@@ -22,6 +22,8 @@ except ImportError:
     logger.warning("dashscope SDK not installed, falling back to HTTP API")
 
 from app.core.config import settings
+from app.core.vector_validator import VectorQualityValidator, validate_embeddings
+from app.core.vector_config import get_dimension
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +33,9 @@ class QwenEmbeddingConfig:
     """Qwen嵌入模型配置"""
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     api_key: str = "sk-5233a3a4b1a24426b6846a432794bbe2"
-    primary_embedding_model: str = "text-embedding-v1"  # 修复：使用可用的模型
-    backup_embedding_model: str = "text-embedding-ada-002"  # 备用模型
-    reranker_model: str = "qwen3-rerank"  # 使用可用的重排序模型
+    primary_embedding_model: str = "qwen2.5-vl-embedding"
+    backup_embedding_model: str = "text-embedding-v4"
+    reranker_model: str = "qwen3-rerank"
     timeout: int = 60
     max_retries: int = 5  # 增加重试次数
     batch_size: int = 8  # 减小批量大小以避免500错误
@@ -43,6 +45,11 @@ class QwenEmbeddingConfig:
     # 缓存配置
     cache_size: int = 1000
     enable_cache: bool = True
+
+    # 向量质量验证配置
+    enable_validation: bool = True  # 启用向量质量验证
+    skip_invalid_embeddings: bool = True  # 跳过无效向量而非返回零向量
+    raise_on_all_failed: bool = True  # 如果所有向量都失败，抛出异常
 
 
 class QwenEmbeddingService:
@@ -60,7 +67,10 @@ class QwenEmbeddingService:
                 batch_size=8,  # 减小批量大小
                 normalize_embeddings=True,
                 cache_size=1000,
-                enable_cache=True
+                enable_cache=True,
+                enable_validation=True,
+                skip_invalid_embeddings=True,
+                raise_on_all_failed=True
             )
 
         self.config = config
@@ -74,6 +84,19 @@ class QwenEmbeddingService:
         self.cache_misses = 0
         self.primary_model_failures = 0
         self.max_primary_failures = 5
+
+        # 初始化向量质量验证器
+        if self.config.enable_validation:
+            self.vector_validator = VectorQualityValidator(
+                expected_dim=get_dimension(self.config.primary_embedding_model),
+                check_zero_vector=True,
+                check_nan=True,
+                check_inf=True,
+                check_dimension=True
+            )
+            logger.info("Vector quality validation enabled")
+        else:
+            self.vector_validator = None
 
     async def __aenter__(self):
         return self
@@ -141,11 +164,16 @@ class QwenEmbeddingService:
                                         break
                                     continue
                             else:
+                                error_msg = resp.get('message', 'Unknown error')
                                 logger.error(f"MultiModalEmbedding API error: {resp}")
-                                # 返回零向量作为fallback
-                                all_embeddings.extend([np.zeros(1024, dtype=np.float32)] * len(batch_texts))
-                                batch_success = True
-                                break
+                                # 不再返回零向量，而是让重试机制处理
+                                if attempt == self.config.max_retries - 1:
+                                    # 最后一次尝试失败，抛出异常
+                                    raise RuntimeError(
+                                        f"MultiModalEmbedding API failed after {self.config.max_retries} attempts: "
+                                        f"status={resp.status_code}, error={error_msg}"
+                                    )
+                                continue
 
                     except Exception as e:
                         logger.error(f"MultiModalEmbedding API调用异常 (尝试 {attempt + 1}/{self.config.max_retries}): {e}")
@@ -153,10 +181,10 @@ class QwenEmbeddingService:
                             await asyncio.sleep(1 * (attempt + 1))  # 递增延迟
                             continue
                         else:
-                            # 最后一次尝试失败,返回零向量
-                            all_embeddings.extend([np.zeros(1024, dtype=np.float32)] * len(batch_texts))
-                            batch_success = True
-                            break
+                            # 最后一次尝试失败，抛出异常
+                            raise RuntimeError(
+                                f"MultiModalEmbedding API failed after {self.config.max_retries} attempts: {str(e)}"
+                            ) from e
 
                 # 批次之间添加延迟以避免触发速率限制
                 if i + batch_size < len(texts) and self.config.batch_delay > 0:
@@ -225,11 +253,15 @@ class QwenEmbeddingService:
                                         break
                                     continue
                             else:
+                                error_msg = resp.get('message', 'Unknown error')
                                 logger.error(f"TextEmbedding API error: {resp}")
-                                # 返回零向量作为fallback
-                                all_embeddings.extend([np.zeros(1024, dtype=np.float32)] * len(batch_texts))
-                                batch_success = True
-                                break
+                                # 不再返回零向量
+                                if attempt == self.config.max_retries - 1:
+                                    raise RuntimeError(
+                                        f"TextEmbedding API failed after {self.config.max_retries} attempts: "
+                                        f"status={resp.status_code}, error={error_msg}"
+                                    )
+                                continue
 
                     except Exception as e:
                         logger.error(f"TextEmbedding API调用异常 (尝试 {attempt + 1}/{self.config.max_retries}): {e}")
@@ -237,10 +269,9 @@ class QwenEmbeddingService:
                             await asyncio.sleep(1 * (attempt + 1))  # 递增延迟
                             continue
                         else:
-                            # 最后一次尝试失败,返回零向量
-                            all_embeddings.extend([np.zeros(1024, dtype=np.float32)] * len(batch_texts))
-                            batch_success = True
-                            break
+                            raise RuntimeError(
+                                f"TextEmbedding API failed after {self.config.max_retries} attempts: {str(e)}"
+                            ) from e
 
                 # 批次之间添加延迟以避免触发速率限制
                 if i + batch_size < len(texts) and self.config.batch_delay > 0:
@@ -321,11 +352,10 @@ class QwenEmbeddingService:
                     if attempt < self.config.max_retries - 1:
                         await asyncio.sleep(1)
                         continue
-                    raise
-
-            # 如果所有尝试都失败，返回零向量
-            if not batch_success:
-                all_embeddings.extend([np.zeros(1024, dtype=np.float32)] * len(batch_texts))
+                    # 不再返回零向量，抛出异常
+                    raise RuntimeError(
+                        f"HTTP fallback failed after {self.config.max_retries} attempts: {str(e)}"
+                    ) from e
 
             # 批次之间添加延迟
             if i + batch_size < len(texts) and self.config.batch_delay > 0:
@@ -518,7 +548,30 @@ class QwenEmbeddingService:
                     # 使用 text-embedding-v4 (TextEmbedding API)
                     embeddings = await self._call_text_embedding(uncached_texts)
 
-                # 处理结果
+                # 向量质量验证（如果启用）
+                if self.vector_validator and self.config.enable_validation:
+                    valid_embeddings, invalid_indices = self._validate_and_filter(
+                        embeddings, uncached_texts, model_name
+                    )
+
+                    # 记录统计
+                    if invalid_indices:
+                        logger.warning(
+                            f"Filtered out {len(invalid_indices)} invalid embeddings "
+                            f"out of {len(embeddings)} using {model_name}"
+                        )
+
+                    # 检查是否所有向量都无效
+                    if len(valid_embeddings) == 0 and self.config.raise_on_all_failed:
+                        raise RuntimeError(
+                            f"All embeddings failed validation for {len(uncached_texts)} texts. "
+                            f"Model: {model_name}"
+                        )
+
+                    # 使用验证后的向量
+                    embeddings = valid_embeddings
+
+                # 处理结果 - 只处理有效向量
                 for i, embedding in enumerate(embeddings):
                     # 归一化
                     embedding = self._normalize_embedding(embedding)
@@ -546,13 +599,67 @@ class QwenEmbeddingService:
                     return await self.encode(texts, use_backup=True)
                 raise
 
-        # 构建最终结果
-        results = [cached_results.get(i, np.zeros(1024, dtype=np.float32)) for i in range(len(texts))]
+        # 构建最终结果 - 不再使用零向量作为默认值
+        results = []
+        for i in range(len(texts)):
+            if i in cached_results:
+                results.append(cached_results[i])
+            else:
+                # 如果没有缓存且跳过无效向量，则跳过
+                if self.config.skip_invalid_embeddings:
+                    logger.warning(f"No valid embedding for text at index {i}, skipping")
+                    # 可以选择抛出异常或添加占位符
+                    if self.config.raise_on_all_failed and len(results) == 0:
+                        raise RuntimeError(f"Failed to generate any valid embeddings")
+                else:
+                    # 兼容旧逻辑：返回零向量（不推荐）
+                    results.append(np.zeros(get_dimension(model_name), dtype=np.float32))
 
-        logger.info(f"Encoded {len(results)} texts using {model_name}")
+        logger.info(f"Encoded {len(results)} texts using {model_name} (requested: {len(texts)})")
         logger.info(f"Cache stats - Hits: {self.cache_hits}, Misses: {self.cache_misses}")
 
         return results
+
+    def _validate_and_filter(
+        self,
+        embeddings: List[np.ndarray],
+        texts: List[str],
+        model_name: str
+    ) -> Tuple[List[np.ndarray], List[int]]:
+        """
+        验证并过滤向量
+
+        Args:
+            embeddings: 嵌入向量列表
+            texts: 对应的文本列表
+            model_name: 模型名称
+
+        Returns:
+            (有效向量列表, 无效索引列表)
+        """
+        if not self.vector_validator:
+            return embeddings, []
+
+        valid_embeddings = []
+        invalid_indices = []
+
+        for i, (embedding, text) in enumerate(zip(embeddings, texts)):
+            result = self.vector_validator.validate_embedding(embedding, i)
+
+            if result.is_valid:
+                valid_embeddings.append(embedding)
+            else:
+                invalid_indices.append(i)
+                text_preview = text[:50] if text else "N/A"
+                logger.warning(
+                    f"Invalid embedding at index {i} (text: '{text_preview}...'): {result.reason}"
+                )
+
+                # 如果不跳过无效向量，则记录但不过滤
+                if not self.config.skip_invalid_embeddings:
+                    valid_embeddings.append(embedding)
+
+        return valid_embeddings, invalid_indices
 
     async def encode_single(self, text: str, use_backup: bool = False) -> np.ndarray:
         """编码单个文本"""
