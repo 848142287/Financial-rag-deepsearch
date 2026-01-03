@@ -4,15 +4,12 @@
 """
 
 import os
-import logging
+from app.core.structured_logging import get_structured_logger
 import asyncio
-from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass, field
-from enum import Enum
+from typing import Dict, List, Any, Optional
 import json
 from pathlib import Path
 import tempfile
-import base64
 
 from ..engines.mineru_engine import MineruEngine
 from ..engines.qwen_vl_engine import QwenVLEngine
@@ -20,74 +17,9 @@ from ..processors.structure_analyzer import StructureAnalyzer
 from ..processors.content_aggregator import ContentAggregator
 from ..evaluators.integrity_evaluator import IntegrityEvaluator
 from ..repairers.auto_repairer import AutoRepairer
+from .types import ContentType, ContentBlock, Chapter, ParsedDocument, ParsingConfig
 
-logger = logging.getLogger(__name__)
-
-
-class ContentType(Enum):
-    """内容类型枚举"""
-    CHAPTER = "chapter"
-    TEXT = "text"
-    IMAGE = "image"
-    FORMULA = "formula"
-    TABLE = "table"
-    FIGURE = "figure"
-    FOOTNOTE = "footnote"
-    HEADER = "header"
-    FOOTER = "footer"
-
-
-@dataclass
-class ContentBlock:
-    """内容块"""
-    id: str
-    content_type: ContentType
-    content: str
-    bbox: Optional[Tuple[float, float, float, float]] = None
-    page_number: int = 0
-    chapter_id: Optional[str] = None
-    confidence: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    raw_data: Optional[Dict[str, Any]] = None
-
-
-@dataclass
-class Chapter:
-    """章节结构"""
-    id: str
-    title: str
-    level: int  # 1: 一级标题, 2: 二级标题, ...
-    start_page: int
-    end_page: int
-    sub_chapters: List[str] = field(default_factory=list)
-    blocks: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ParsedDocument:
-    """解析后的文档"""
-    document_id: str
-    title: str
-    total_pages: int
-    chapters: List[Chapter]
-    content_blocks: List[ContentBlock]
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    parsing_stats: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ParsingConfig:
-    """解析配置"""
-    use_mineru: bool = True
-    use_qwen_vl_ocr: bool = True
-    use_qwen_vl_max: bool = True
-    prefer_high_quality: bool = True
-    enable_auto_repair: bool = True
-    integrity_threshold: float = 0.8
-    max_repair_attempts: int = 3
-    parallel_processing: bool = True
-    temp_dir: Optional[str] = None
+logger = get_structured_logger(__name__)
 
 
 class MultimodalDocumentParser:
@@ -181,22 +113,14 @@ class MultimodalDocumentParser:
             raise
 
     async def _parallel_parse(self, file_path: str, document_id: str) -> Dict[str, Any]:
-        """并行解析文档"""
+        """并行解析文档（优化版 - 只使用MinerU）"""
         tasks = []
 
-        # Mineru解析任务
+        # 只使用MinerU解析任务（性能优化）
         if self.mineru_engine:
             tasks.append(self._run_mineru_parse(file_path, document_id))
 
-        # Qwen-VL-OCR解析任务
-        if self.qwen_vl_engine and self.config.use_qwen_vl_ocr:
-            tasks.append(self._run_qwen_vl_ocr(file_path, document_id))
-
-        # Qwen-VL-Max解析任务
-        if self.qwen_vl_engine and self.config.use_qwen_vl_max:
-            tasks.append(self._run_qwen_vl_max(file_path, document_id))
-
-        # 并行执行所有解析任务
+        # 并行执行解析任务
         if self.config.parallel_processing and tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
         else:
@@ -221,15 +145,11 @@ class MultimodalDocumentParser:
                 logger.error(f"解析引擎 {i} 出错: {str(result)}")
                 continue
 
+            # 只处理MinerU结果
             if self.mineru_engine and i == 0:
                 raw_results['mineru_results'] = result
-            elif self.config.use_qwen_vl_ocr and self.mineru_engine and i == 1:
-                raw_results['qwen_ocr_results'] = result
-            elif self.config.use_qwen_vl_ocr and not self.mineru_engine and i == 0:
-                raw_results['qwen_ocr_results'] = result
-            elif self.config.use_qwen_vl_max:
-                raw_results['qwen_max_results'] = result
 
+        logger.info(f"解析完成，使用引擎: MinerU")
         return raw_results
 
     async def _run_mineru_parse(self, file_path: str, document_id: str) -> Dict[str, Any]:

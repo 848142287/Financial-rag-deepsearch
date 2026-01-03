@@ -1,7 +1,7 @@
 """
 OCR 服务 API 端点
 
-提供完整的文档OCR识别API：
+提供完整的文档OCR识别API（使用GLM-4.6V）：
 1. 图片OCR识别
 2. PDF文档OCR识别
 3. Word/PPT文档OCR识别（自动转换）
@@ -10,17 +10,13 @@ OCR 服务 API 端点
 
 import os
 import tempfile
+import time
 from typing import List, Optional
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services.ocr.deepseek_ocr_service import (
-    get_deepseek_ocr_service,
-    OCRResult,
-    BatchOCRResult
-)
+from app.services.ocr_service import get_ocr_service
 from app.services.ocr.document_converter import (
     get_document_converter,
     ConversionResult
@@ -32,17 +28,15 @@ from app.services.ocr.document_converter import (
 class ImageOCRRequest(BaseModel):
     """图片OCR请求"""
     prompt: str = Field(
-        default="<image>\n<|grounding|>Convert the document to markdown.",
-        description="OCR提示词"
+        default=None,
+        description="OCR提示词（可选，默认使用GLM-4.6V内置提示词）"
     )
 
 
 class PdfOCRRequest(BaseModel):
     """PDF OCR请求"""
-    dpi: int = Field(default=144, description="转换DPI")
     max_pages: Optional[int] = Field(default=None, description="最大处理页数")
-    batch_size: int = Field(default=4, description="批处理大小")
-    use_batch: bool = Field(default=True, description="是否使用批处理")
+    max_concurrent: int = Field(default=12, description="最大并发数")
 
 
 class DocumentOCRRequest(BaseModel):
@@ -56,7 +50,6 @@ class OCRResponse(BaseModel):
     """OCR响应"""
     success: bool
     message: str
-    markdown: str = ""
     text: str = ""
     page_count: int = 0
     processing_time: float = 0.0
@@ -69,7 +62,6 @@ class BatchOCRResponse(BaseModel):
     message: str
     total_pages: int
     processed_pages: int
-    full_markdown: str = ""
     full_text: str = ""
     processing_time: float = 0.0
     errors: List[str] = []
@@ -86,18 +78,18 @@ router = APIRouter()
 async def health_check():
     """健康检查端点"""
     try:
-        ocr_service = get_deepseek_ocr_service()
+        ocr_service = get_ocr_service()
         return {
             "status": "healthy",
-            "service": "DeepSeek-OCR",
-            "api_base": ocr_service.api_base,
-            "timeout": ocr_service.timeout,
+            "service": "GLM-4.6V OCR",
+            "model": "glm-4.6v",
             "features": [
-                "图片OCR识别",
+                "图片OCR识别（高精度）",
                 "PDF文档OCR",
                 "Word/PPT文档OCR（自动转换）",
                 "批量并发处理",
-                "Markdown格式输出"
+                "内置优化的OCR提示词",
+                "自动格式保持"
             ]
         }
     except Exception as e:
@@ -109,52 +101,53 @@ async def health_check():
 @router.post("/ocr/image", response_model=OCRResponse, tags=["OCR识别"])
 async def ocr_image(
     file: UploadFile = File(..., description="图片文件"),
-    prompt: str = Form(default="<image>\n<|grounding|>Convert the document to markdown.")
+    prompt: str = Form(default=None)
 ):
     """
     图片OCR识别
 
     支持的格式：PNG, JPG, JPEG, BMP, GIF
+    使用GLM-4.6V云端API进行高精度OCR识别
     """
-    ocr_service = get_deepseek_ocr_service()
+    ocr_service = get_ocr_service()
 
-    # 保存临时文件
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}")
-    try:
-        content = await file.read()
-        temp_file.write(content)
-        temp_file_path = temp_file.name
-    finally:
-        temp_file.close()
+    # 读取文件内容
+    content = await file.read()
 
     try:
+        start_time = time.time()
+
         # OCR识别
-        result: OCRResult = ocr_service.ocr_image(temp_file_path, prompt)
+        result = await ocr_service.extract_text_from_image(
+            content,
+            prompt=prompt
+        )
 
-        if result.metadata.get("error"):
-            raise HTTPException(status_code=500, detail=result.metadata["error"])
+        processing_time = time.time() - start_time
+
+        if not result.get('success'):
+            return OCRResponse(
+                success=False,
+                message=result.get('error', 'OCR识别失败'),
+                text="",
+                processing_time=processing_time
+            )
 
         return OCRResponse(
             success=True,
             message="OCR识别完成",
-            markdown=result.markdown,
-            text=result.text,
+            text=result.get('text', ''),
             page_count=1,
-            processing_time=result.processing_time,
+            processing_time=processing_time,
             metadata={
-                "confidence": result.confidence,
+                "model": result.get('model', 'glm-4.6v'),
+                "confidence": result.get('confidence', 0.0),
                 "filename": file.filename
             }
         )
 
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OCR识别失败: {str(e)}")
-    finally:
-        # 清理临时文件
-        if os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
 
 
 # ==================== 2. PDF OCR ====================
@@ -162,65 +155,51 @@ async def ocr_image(
 @router.post("/ocr/pdf", response_model=BatchOCRResponse, tags=["OCR识别"])
 async def ocr_pdf(
     file: UploadFile = File(..., description="PDF文件"),
-    dpi: int = Form(default=144),
     max_pages: Optional[int] = Form(default=None),
-    batch_size: int = Form(default=4),
-    use_batch: bool = Form(default=True)
+    max_concurrent: int = Form(default=12)
 ):
     """
     PDF文档OCR识别
 
     支持扫描PDF和文本PDF的OCR识别
+    使用GLM-4.6V云端API
     """
-    ocr_service = get_deepseek_ocr_service()
+    ocr_service = get_ocr_service()
 
-    # 保存临时文件
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}")
-    try:
-        content = await file.read()
-        temp_file.write(content)
-        temp_file_path = temp_file.name
-    finally:
-        temp_file.close()
+    # 读取PDF文件
+    content = await file.read()
 
     try:
-        # PDF OCR识别
-        if use_batch:
-            result: BatchOCRResult = ocr_service.ocr_pdf_batch(
-                temp_file_path,
-                dpi=dpi,
-                max_pages=max_pages,
-                batch_size=batch_size
-            )
-        else:
-            result: BatchOCRResult = ocr_service.ocr_pdf(
-                temp_file_path,
-                dpi=dpi,
-                max_pages=max_pages
-            )
+        start_time = time.time()
 
-        # 获取完整文本
-        full_markdown = ocr_service.get_full_markdown(result)
-        full_text = ocr_service.get_full_text(result)
+        # PDF批量OCR识别
+        results = await ocr_service.batch_extract_from_pdf(
+            content,
+            pages=None,  # None表示全部页面
+            max_concurrent=max_concurrent
+        )
+
+        processing_time = time.time() - start_time
+
+        # 统计结果
+        total_pages = len(results)
+        processed_pages = sum(1 for r in results if r.get('success'))
+        errors = [r.get('error', 'Unknown error') for r in results if not r.get('success')]
+        full_text = "\n\n".join([r.get('text', '') for r in results if r.get('success')])
 
         return BatchOCRResponse(
-            success=result.success,
-            message=f"PDF OCR完成，处理了{result.processed_pages}页" +
-                    (f"，{len(result.errors)}页失败" if result.errors else ""),
-            total_pages=result.total_pages,
-            processed_pages=result.processed_pages,
-            full_markdown=full_markdown,
+            success=len(errors) == 0,
+            message=f"PDF OCR完成，处理了{processed_pages}/{total_pages}页" +
+                    (f"，{len(errors)}页失败" if errors else ""),
+            total_pages=total_pages,
+            processed_pages=processed_pages,
             full_text=full_text,
-            processing_time=result.total_time,
-            errors=result.errors
+            processing_time=processing_time,
+            errors=errors
         )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF OCR失败: {str(e)}")
-    finally:
-        # 清理临时文件
-        if os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
 
 
 # ==================== 3. Word/PPT OCR ====================
@@ -228,9 +207,7 @@ async def ocr_pdf(
 @router.post("/ocr/document", response_model=BatchOCRResponse, tags=["OCR识别"])
 async def ocr_document(
     file: UploadFile = File(..., description="文档文件（Word/PPT/Excel等）"),
-    dpi: int = Form(default=144),
     max_pages: Optional[int] = Form(default=None),
-    batch_size: int = Form(default=4),
     auto_delete: bool = Form(default=True)
 ):
     """
@@ -243,8 +220,10 @@ async def ocr_document(
     - 纯文本 (.txt)
     - 图片 (.png, .jpg等)
     - PDF (.pdf)
+
+    自动转换为PDF后进行OCR识别
     """
-    ocr_service = get_deepseek_ocr_service()
+    ocr_service = get_ocr_service()
     converter = get_document_converter()
 
     # 保存临时文件
@@ -259,6 +238,8 @@ async def ocr_document(
     temp_pdf_path = None
 
     try:
+        start_time = time.time()
+
         # 转换为PDF
         conversion_result: ConversionResult = converter.convert_to_pdf(
             temp_input_path
@@ -272,28 +253,34 @@ async def ocr_document(
 
         temp_pdf_path = conversion_result.output_path
 
+        # 读取转换后的PDF
+        with open(temp_pdf_path, 'rb') as f:
+            pdf_content = f.read()
+
         # PDF OCR识别
-        ocr_result: BatchOCRResult = ocr_service.ocr_pdf_batch(
-            temp_pdf_path,
-            dpi=dpi,
-            max_pages=max_pages,
-            batch_size=batch_size
+        results = await ocr_service.batch_extract_from_pdf(
+            pdf_content,
+            pages=None,
+            max_concurrent=12
         )
 
-        # 获取完整文本
-        full_markdown = ocr_service.get_full_markdown(ocr_result)
-        full_text = ocr_service.get_full_text(ocr_result)
+        processing_time = time.time() - start_time
+
+        # 统计结果
+        total_pages = len(results)
+        processed_pages = sum(1 for r in results if r.get('success'))
+        errors = [r.get('error', 'Unknown error') for r in results if not r.get('success')]
+        full_text = "\n\n".join([r.get('text', '') for r in results if r.get('success')])
 
         return BatchOCRResponse(
-            success=ocr_result.success,
-            message=f"文档OCR完成，处理了{ocr_result.processed_pages}页" +
-                    (f"，{len(ocr_result.errors)}页失败" if ocr_result.errors else ""),
-            total_pages=ocr_result.total_pages,
-            processed_pages=ocr_result.processed_pages,
-            full_markdown=full_markdown,
+            success=len(errors) == 0,
+            message=f"文档OCR完成，处理了{processed_pages}/{total_pages}页" +
+                    (f"，{len(errors)}页失败" if errors else ""),
+            total_pages=total_pages,
+            processed_pages=processed_pages,
             full_text=full_text,
-            processing_time=ocr_result.total_time,
-            errors=ocr_result.errors
+            processing_time=processing_time,
+            errors=errors
         )
 
     except HTTPException:
@@ -313,52 +300,50 @@ async def ocr_document(
 @router.post("/ocr/batch-images", response_model=BatchOCRResponse, tags=["OCR识别"])
 async def ocr_batch_images(
     files: List[UploadFile] = File(..., description="图片文件列表"),
-    prompt: str = Form(default="<image>\n<|grounding|>Convert the document to markdown.")
+    prompt: str = Form(default=None)
 ):
     """
     批量图片OCR识别
 
     一次上传多张图片进行OCR识别
+    使用GLM-4.6V云端API
     """
-    ocr_service = get_deepseek_ocr_service()
+    ocr_service = get_ocr_service()
     results = []
     errors = []
-    start_time = 0  # 临时占位
+    start_time = time.time()
 
     for file in files:
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}")
         try:
             content = await file.read()
-            temp_file.write(content)
-            temp_file_path = temp_file.name
-        finally:
-            temp_file.close()
+            result = await ocr_service.extract_text_from_image(
+                content,
+                prompt=prompt
+            )
 
-        try:
-            result = ocr_service.ocr_image(temp_file_path, prompt)
-            result.metadata["filename"] = file.filename
-            results.append(result)
+            if result.get('success'):
+                result['metadata'] = result.get('metadata', {})
+                result['metadata']['filename'] = file.filename
+                results.append(result)
+            else:
+                errors.append(f"{file.filename}: {result.get('error', 'Unknown error')}")
 
         except Exception as e:
             errors.append(f"{file.filename}: {str(e)}")
 
-        finally:
-            if os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
+    processing_time = time.time() - start_time
 
     # 合并结果
-    full_markdown = "\n\n".join([r.markdown for r in results if r.markdown])
-    full_text = "\n\n".join([r.text for r in results if r.text])
+    full_text = "\n\n".join([r.get('text', '') for r in results if r.get('success')])
 
     return BatchOCRResponse(
         success=len(errors) == 0,
-        message=f"批量OCR完成，处理了{len(results)}张图片" +
+        message=f"批量OCR完成，处理了{len(results)}/{len(files)}张图片" +
                 (f"，{len(errors)}张失败" if errors else ""),
         total_pages=len(files),
         processed_pages=len(results),
-        full_markdown=full_markdown,
         full_text=full_text,
-        processing_time=sum(r.processing_time for r in results),
+        processing_time=processing_time,
         errors=errors
     )
 
@@ -368,10 +353,8 @@ async def ocr_batch_images(
 @router.post("/ocr/process", tags=["OCR处理"])
 async def ocr_process_full(
     file: UploadFile = File(..., description="文档文件"),
-    dpi: int = Form(default=144),
     max_pages: Optional[int] = Form(default=None),
-    batch_size: int = Form(default=4),
-    output_format: str = Form(default="markdown")  # markdown, text, json
+    max_concurrent: int = Form(default=12)
 ):
     """
     一体化OCR处理
@@ -381,80 +364,104 @@ async def ocr_process_full(
     2. Word/PPT → 转PDF → OCR
     3. 图片 → 直接OCR
     4. 其他 → 尝试转换
-    """
-    # 根据文件扩展名判断类型
-    filename = file.filename.lower()
-    temp_input = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}")
 
-    try:
-        content = await file.read()
-        temp_input.write(content)
-        temp_input_path = temp_input.name
-    finally:
-        temp_input.close()
+    使用GLM-4.6V云端API
+    """
+    ocr_service = get_ocr_service()
+    converter = get_document_converter()
+
+    # 读取文件
+    content = await file.read()
+    filename = file.filename.lower()
+    start_time = time.time()
 
     try:
         if filename.endswith('.pdf'):
             # PDF直接OCR
-            from app.services.ocr.deepseek_ocr_service import get_deepseek_ocr_service
-            ocr_service = get_deepseek_ocr_service()
-            result = ocr_service.ocr_pdf_batch(
-                temp_input_path,
-                dpi=dpi,
-                max_pages=max_pages,
-                batch_size=batch_size
+            results = await ocr_service.batch_extract_from_pdf(
+                content,
+                pages=None,
+                max_concurrent=max_concurrent
             )
 
-            full_markdown = ocr_service.get_full_markdown(result)
-            full_text = ocr_service.get_full_text(result)
+            total_pages = len(results)
+            processed_pages = sum(1 for r in results if r.get('success'))
+            errors = [r.get('error') for r in results if not r.get('success')]
+            full_text = "\n\n".join([r.get('text', '') for r in results if r.get('success')])
 
             return {
-                "success": result.success,
+                "success": len(errors) == 0,
                 "file_type": "pdf",
-                "total_pages": result.total_pages,
-                "processed_pages": result.processed_pages,
-                "markdown": full_markdown if output_format in ["markdown", "json"] else None,
-                "text": full_text if output_format in ["text", "json"] else None,
-                "processing_time": result.total_time,
-                "errors": result.errors
+                "total_pages": total_pages,
+                "processed_pages": processed_pages,
+                "text": full_text,
+                "processing_time": time.time() - start_time,
+                "errors": errors
+            }
+
+        elif filename.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+            # 图片直接OCR
+            result = await ocr_service.extract_text_from_image(content)
+
+            return {
+                "success": result.get('success', False),
+                "file_type": "image",
+                "total_pages": 1,
+                "processed_pages": 1 if result.get('success') else 0,
+                "text": result.get('text', ''),
+                "processing_time": time.time() - start_time,
+                "errors": [result.get('error')] if not result.get('success') else []
             }
 
         else:
             # 其他格式：转换 → OCR
-            converter = get_document_converter()
-            conversion_result = converter.convert_to_pdf(temp_input_path)
+            temp_input = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}")
+            try:
+                temp_input.write(content)
+                temp_input_path = temp_input.name
+            finally:
+                temp_input.close()
 
-            if not conversion_result.success:
+            try:
+                conversion_result = converter.convert_to_pdf(temp_input_path)
+
+                if not conversion_result.success:
+                    return {
+                        "success": False,
+                        "error": conversion_result.error_message
+                    }
+
+                # 读取转换后的PDF
+                with open(conversion_result.output_path, 'rb') as f:
+                    pdf_content = f.read()
+
+                results = await ocr_service.batch_extract_from_pdf(
+                    pdf_content,
+                    pages=None,
+                    max_concurrent=max_concurrent
+                )
+
+                total_pages = len(results)
+                processed_pages = sum(1 for r in results if r.get('success'))
+                errors = [r.get('error') for r in results if not r.get('success')]
+                full_text = "\n\n".join([r.get('text', '') for r in results if r.get('success')])
+
                 return {
-                    "success": False,
-                    "error": conversion_result.error_message
+                    "success": len(errors) == 0,
+                    "file_type": "document",
+                    "converted_pdf": conversion_result.output_path,
+                    "total_pages": total_pages,
+                    "processed_pages": processed_pages,
+                    "text": full_text,
+                    "processing_time": time.time() - start_time,
+                    "errors": errors
                 }
 
-            ocr_service = get_deepseek_ocr_service()
-            result = ocr_service.ocr_pdf_batch(
-                conversion_result.output_path,
-                dpi=dpi,
-                max_pages=max_pages,
-                batch_size=batch_size
-            )
-
-            full_markdown = ocr_service.get_full_markdown(result)
-            full_text = ocr_service.get_full_text(result)
-
-            return {
-                "success": result.success,
-                "file_type": "document",
-                "converted_pdf": conversion_result.output_path,
-                "total_pages": result.total_pages,
-                "processed_pages": result.processed_pages,
-                "markdown": full_markdown if output_format in ["markdown", "json"] else None,
-                "text": full_text if output_format in ["text", "json"] else None,
-                "processing_time": result.total_time,
-                "errors": result.errors
-            }
+            finally:
+                if os.path.exists(temp_input_path):
+                    os.unlink(temp_input_path)
+                if conversion_result.success and os.path.exists(conversion_result.output_path):
+                    os.unlink(conversion_result.output_path)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
-    finally:
-        if os.path.exists(temp_input_path):
-            os.unlink(temp_input_path)

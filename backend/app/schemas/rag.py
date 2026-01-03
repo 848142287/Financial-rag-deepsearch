@@ -45,6 +45,7 @@ class QueryResponse(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+# TODO: TaskStatus → core.TaskStatus
 class TaskStatus(BaseModel):
     """任务状态模式"""
     task_id: str

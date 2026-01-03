@@ -4,20 +4,17 @@
 """
 
 import hashlib
-import logging
-from typing import Dict, List, Optional, Tuple, Any
-from pathlib import Path
-from datetime import datetime
+from app.core.structured_logging import get_structured_logger
+from typing import Dict, List, Optional
 
 from app.core.database import get_db
 from app.models.document import Document
-from app.services.milvus_service import MilvusService
+from app.services.vectorstore.unified_milvus_service import UnifiedMilvusService
 from app.services.neo4j_service import Neo4jService
 from app.services.minio_service import MinIOService
-from app.core.cache import cache_manager
-from app.core.config import settings
+from app.core.cache_manager import cache_manager
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 class DocumentDeduplicationResult:
     """文档去重检查结果"""
@@ -114,8 +111,9 @@ class DocumentDeduplicationService:
         """在Milvus中搜索相似内容"""
         try:
             # 生成内容向量
-            from app.services.embedding_service import embedding_service
-            embedding = await embedding_service.encode_text(content)
+            from app.services.embeddings.unified_embedding_service import get_embedding_service
+            embedding_service = get_embedding_service()
+            embedding = await embedding_service.embed(content)
 
             if not embedding:
                 return []

@@ -4,9 +4,10 @@
 
 import traceback
 import time
-from typing import Dict, Any, Optional, Callable, List
+from typing import Dict, Any, Optional, Callable
 from app.middleware.base_middleware import BaseMiddleware
-from app.core.logging import logger
+from app.core.structured_logging import get_structured_logger
+logger = get_structured_logger(__name__)
 from app.core.config import get_settings
 
 class ErrorMiddleware(BaseMiddleware):

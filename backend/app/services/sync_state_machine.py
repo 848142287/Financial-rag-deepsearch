@@ -6,9 +6,9 @@
 from enum import Enum
 from typing import Dict, Any, Optional, List
 from datetime import datetime
-import logging
+from app.core.structured_logging import get_structured_logger
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 class SyncState(Enum):
     """同步状态枚举"""

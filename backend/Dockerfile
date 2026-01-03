@@ -8,7 +8,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     TZ=Asia/Shanghai \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    FONTCONFIG_PATH=/etc/fonts \
+    FONTCONFIG_FILE=/etc/fonts/fonts.conf
 
 # 设置工作目录
 WORKDIR /app
@@ -36,6 +38,29 @@ RUN apt-get update && \
     tesseract-ocr-chi-tra \
     libxml2 \
     libxslt1.1 \
+    libreoffice \
+    libreoffice-writer \
+    libreoffice-calc \
+    libreoffice-impress \
+    fonts-liberation \
+    fonts-noto-cjk \
+    libgl1 \
+    libglx-mesa0 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libxrender1 \
+    libxv1 \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libv4l-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libatlas3-base \
     || (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-missing --no-install-recommends \
     build-essential \
     python3-dev \
@@ -53,8 +78,34 @@ RUN apt-get update && \
     tesseract-ocr-chi-sim \
     tesseract-ocr-chi-tra \
     libxml2 \
-    libxslt1.1) \
+    libxslt1.1 \
+    libreoffice \
+    libreoffice-writer \
+    libreoffice-calc \
+    libreoffice-impress \
+    fonts-liberation \
+    fonts-noto-cjk \
+    libgl1 \
+    libglx-mesa0 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libxrender1 \
+    libxv1 \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libv4l-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libatlas3-base) \
     && rm -rf /var/lib/apt/lists/*
+
+# 验证LibreOffice安装
+RUN libreoffice --version
 
 # 升级pip并配置镜像源
 RUN pip install --no-cache-dir --upgrade pip -i https://mirrors.aliyun.com/pypi/simple/ && \
@@ -63,24 +114,42 @@ RUN pip install --no-cache-dir --upgrade pip -i https://mirrors.aliyun.com/pypi/
 # 复制requirements文件
 COPY requirements.txt requirements.txt
 
+# 安装构建依赖（PyMuPDF需要）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libfreetype6-dev \
+    libharfbuzz-dev \
+    libfribidi-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
 # 安装Python依赖
 RUN pip install --no-cache-dir -r requirements.txt
+
+# 安装gosu用于用户切换
+RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
 
 # 创建非root用户
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# 创建必要的目录
-RUN mkdir -p logs uploads temp cache/disk cache/uploads module_backups && \
-    chown -R appuser:appuser /app
+# 创建必要的目录（包括字体缓存目录）
+RUN mkdir -p logs uploads temp cache/disk cache/uploads module_backups storage storage/parsed_docs storage/cache && \
+    mkdir -p /app/.cache/fontconfig && \
+    fc-cache -fv || true && \
+    chown -R appuser:appuser /app /app/.cache
 
 # 复制应用代码
 COPY . .
 
+# 复制并设置启动脚本权限
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # 再次确保目录权限正确
 RUN chown -R appuser:appuser /app
 
-# 切换到非root用户
-USER appuser
+# 设置entrypoint
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # 暴露端口
 EXPOSE 8000

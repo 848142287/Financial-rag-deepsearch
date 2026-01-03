@@ -1,298 +1,215 @@
 """
 智能区域检测器
-集成了 Multimodal_RAG 的 gptpdf 区域检测功能
-使用 Shapely 进行精确的空间位置计算，智能识别表格、图片、文本区域
+检测 PDF 文档中的不同区域（标题、段落、表格等）
 """
 
-import logging
-from typing import List, Tuple, Optional
 import fitz  # PyMuPDF
-import shapely.geometry as sg
-from shapely.validation import explain_validity
 from dataclasses import dataclass
+import re
 
-logger = logging.getLogger(__name__)
+from app.core.structured_logging import get_structured_logger
 
+logger = get_structured_logger(__name__)
 
 @dataclass
 class DetectedRegion:
     """检测到的区域"""
-    region_type: str  # 'table', 'image', 'text', 'drawing'
-    bbox: Tuple[float, float, float, float]  # (x0, y0, x1, y1)
-    page_num: int
-    content: str = ""
+    region_type: str  # title, paragraph, table, image, list, etc.
+    text: str
+    bbox: tuple  # (x0, y0, x1, y1)
+    page: int
     confidence: float = 1.0
+    metadata: Dict[str, Any] = None
 
+    def __post_init__(self):
+        if self.metadata is None:
+            self.metadata = {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'type': self.region_type,
+            'text': self.text,
+            'bbox': self.bbox,
+            'page': self.page,
+            'confidence': self.confidence,
+            'metadata': self.metadata
+        }
 
 class SmartRegionDetector:
-    """
-    智能区域检测器
+    """智能区域检测器"""
 
-    功能：
-    1. 智能区域识别：自动识别表格、图片、文本区域
-    2. 矩形合并算法：合并相邻的文本块
-    3. 精确空间定位：使用 Shapely 进行几何计算
-    """
+    def __init__(self):
+        self.logger = logger
+        # 标题模式
+        self.title_patterns = [
+            r'^[一二三四五六七八九十]+[\s\.\、]',
 
-    def __init__(self, merge_distance: float = 20, horizontal_distance: float = 100):
-        """
-        初始化智能区域检测器
-
-        Args:
-            merge_distance: 合并距离阈值
-            horizontal_distance: 水平合并距离阈值
-        """
-        self.merge_distance = merge_distance
-        self.horizontal_distance = horizontal_distance
-
-        # 短线过滤阈值
-        self.short_line_threshold = 30
-
-        # 小矩形过滤阈值
-        self.min_rect_width = 20
-        self.min_rect_height = 20
-
-        logger.info(f"初始化智能区域检测器，合并距离: {merge_distance}")
-
-    def _is_near(self, rect1: sg.Polygon, rect2: sg.Polygon, distance: float = None) -> bool:
-        """检查两个矩形是否靠近"""
-        distance = distance or self.merge_distance
-        return rect1.buffer(0.1).distance(rect2.buffer(0.1)) < distance
-
-    def _is_horizontal_near(
-        self,
-        rect1: sg.Polygon,
-        rect2: sg.Polygon,
-        distance: float = None
-    ) -> bool:
-        """检查两个矩形是否水平靠近"""
-        distance = distance or self.horizontal_distance
-        result = False
-        if abs(rect1.bounds[3] - rect1.bounds[1]) < 0.1 or abs(rect2.bounds[3] - rect2.bounds[1]) < 0.1:
-            if abs(rect1.bounds[0] - rect2.bounds[0]) < 0.1 and abs(rect1.bounds[2] - rect2.bounds[2]) < 0.1:
-                result = abs(rect1.bounds[3] - rect2.bounds[3]) < distance
-        return result
-
-    def _union_rects(self, rect1: sg.Polygon, rect2: sg.Polygon) -> sg.Polygon:
-        """合并两个矩形"""
-        return sg.box(*(rect1.union(rect2).bounds))
-
-    def _merge_rects(
-        self,
-        rect_list: List[sg.Polygon],
-        distance: float = None,
-        horizontal_distance: float = None
-    ) -> List[sg.Polygon]:
-        """合并列表中的矩形"""
-        distance = distance or self.merge_distance
-        horizontal_distance = horizontal_distance or self.horizontal_distance
-
-        merged = True
-        while merged:
-            merged = False
-            new_rect_list = []
-            while rect_list:
-                rect = rect_list.pop(0)
-                for other_rect in rect_list:
-                    if self._is_near(rect, other_rect, distance) or (
-                        horizontal_distance and self._is_horizontal_near(rect, other_rect, horizontal_distance)
-                    ):
-                        rect = self._union_rects(rect, other_rect)
-                        rect_list.remove(other_rect)
-                        merged = True
-                new_rect_list.append(rect)
-            rect_list = new_rect_list
-        return rect_list
-
-    def _adsorb_rects_to_rects(
-        self,
-        source_rects: List[sg.Polygon],
-        target_rects: List[sg.Polygon],
-        distance: float = 10
-    ) -> Tuple[List[sg.Polygon], List[sg.Polygon]]:
-        """当距离小于目标距离时，将一组矩形吸附到另一组矩形"""
-        new_source_rects = []
-        for text_area_rect in source_rects:
-            adsorbed = False
-            for index, rect in enumerate(target_rects):
-                if self._is_near(text_area_rect, rect, distance):
-                    target_rects[index] = self._union_rects(text_area_rect, rect)
-                    adsorbed = True
-                    break
-            if not adsorbed:
-                new_source_rects.append(text_area_rect)
-        return new_source_rects, target_rects
-
-    def _parse_rects(self, page: fitz.Page) -> List[Tuple[float, float, float, float]]:
-        """解析页面中的绘图，并合并相邻的矩形"""
-        # 提取画的内容
-        drawings = page.get_drawings()
-
-        # 忽略掉长度小于阈值的水平直线
-        is_short_line = lambda x: abs(x['rect'][3] - x['rect'][1]) < 1 and abs(x['rect'][2] - x['rect'][0]) < self.short_line_threshold
-        drawings = [drawing for drawing in drawings if not is_short_line(drawing)]
-
-        # 转换为 shapely 的矩形
-        rect_list = [sg.box(*drawing['rect']) for drawing in drawings]
-
-        # 提取图片区域
-        images = page.get_image_info()
-        image_rects = [sg.box(*image['bbox']) for image in images]
-
-        # 合并 drawings 和 images
-        rect_list += image_rects
-
-        merged_rects = self._merge_rects(rect_list, distance=10, horizontal_distance=self.horizontal_distance)
-        merged_rects = [rect for rect in merged_rects if explain_validity(rect) == 'Valid Geometry']
-
-        # 将大文本区域和小文本区域分开处理
-        is_large_content = lambda x: (len(x[4]) / max(1, len(x[4].split('\n')))) > 5
-        small_text_area_rects = [sg.box(*x[:4]) for x in page.get_text('blocks') if not is_large_content(x)]
-        large_text_area_rects = [sg.box(*x[:4]) for x in page.get_text('blocks') if is_large_content(x)]
-
-        _, merged_rects = self._adsorb_rects_to_rects(large_text_area_rects, merged_rects, distance=0.1)
-        _, merged_rects = self._adsorb_rects_to_rects(small_text_area_rects, merged_rects, distance=5)
-
-        # 再次自身合并
-        merged_rects = self._merge_rects(merged_rects, distance=10)
-
-        # 过滤比较小的矩形
-        merged_rects = [
-            rect for rect in merged_rects
-            if rect.bounds[2] - rect.bounds[0] > self.min_rect_width and
-            rect.bounds[3] - rect.bounds[1] > self.min_rect_height
+            r'^[0-9]+[\s\.\、][\u4e00-\u9fa5]+',
+            r'^[A-Z][a-z]+[\s\.].+',
+            r'^第[一二三四五六七八九十]+[章节条款]',
         ]
 
-        return [rect.bounds for rect in merged_rects]
-
-    def detect_regions(
+    async def detect_regions(
         self,
-        pdf_path: str,
-        pages: Optional[List[int]] = None
+        file_path: str,
+        detect_tables: bool = True,
+        detect_images: bool = True
     ) -> List[DetectedRegion]:
         """
-        检测 PDF 中的智能区域
+        检测 PDF 文档中的所有区域
 
         Args:
-            pdf_path: PDF 文件路径
-            pages: 要检测的页码列表（None 表示全部）
+            file_path: PDF 文件路径
+            detect_tables: 是否检测表格
+            detect_images: 是否检测图片
 
         Returns:
             List[DetectedRegion]: 检测到的区域列表
         """
-        doc = fitz.open(pdf_path)
-        all_regions = []
+        try:
+            self.logger.info(f"开始检测区域: {file_path}")
 
-        pages_to_process = pages if pages else range(len(doc))
+            doc = fitz.open(file_path)
+            all_regions = []
 
-        for page_num in pages_to_process:
-            try:
+            for page_num in range(doc.page_count):
                 page = doc[page_num]
-                rects = self._parse_rects(page)
-
-                # 获取文本内容
-                text_blocks = page.get_text('blocks')
-
-                # 分类区域
-                for rect in rects:
-                    region = self._classify_region(rect, page, text_blocks, page_num)
-                    if region:
-                        all_regions.append(region)
-
-            except Exception as e:
-                logger.error(f"处理页面 {page_num+1} 时出错: {e}")
-
-        doc.close()
-
-        logger.info(f"智能区域检测完成，共检测到 {len(all_regions)} 个区域")
-        return all_regions
-
-    def _classify_region(
-        self,
-        rect: Tuple[float, float, float, float],
-        page: fitz.Page,
-        text_blocks: List,
-        page_num: int
-    ) -> Optional[DetectedRegion]:
-        """
-        分类检测到的区域
-
-        Args:
-            rect: 区域边界框
-            page: PyMuPDF 页面对象
-            text_blocks: 文本块列表
-            page_num: 页码
-
-        Returns:
-            DetectedRegion 或 None
-        """
-        # 获取区域内的文本
-        rect_fitz = fitz.Rect(rect)
-        text = page.get_text('text', clip=rect_fitz)
-
-        # 检查是否包含表格特征
-        table_keywords = ['|', '表', 'Table', '表格']
-        if any(keyword in text for keyword in table_keywords):
-            return DetectedRegion(
-                region_type='table',
-                bbox=rect,
-                page_num=page_num,
-                content=text,
-                confidence=0.8
-            )
-
-        # 检查是否是图片
-        images = page.get_image_info()
-        for img in images:
-            img_bbox = img['bbox']
-            if self._rects_overlap(rect, img_bbox):
-                return DetectedRegion(
-                    region_type='image',
-                    bbox=rect,
-                    page_num=page_num,
-                    content=text,
-                    confidence=0.9
+                page_regions = await self._detect_regions_in_page(
+                    page,
+                    page_num + 1,
+                    detect_tables,
+                    detect_images
                 )
+                all_regions.extend(page_regions)
 
-        # 默认为文本区域
-        if text.strip():
-            return DetectedRegion(
-                region_type='text',
-                bbox=rect,
-                page_num=page_num,
-                content=text,
-                confidence=0.7
-            )
+            doc.close()
 
-        return None
+            self.logger.info(f"检测完成，共发现 {len(all_regions)} 个区域")
+            return all_regions
 
-    def _rects_overlap(
+        except Exception as e:
+            self.logger.error(f"区域检测失败: {e}")
+            return []
+
+    async def _detect_regions_in_page(
         self,
-        rect1: Tuple[float, float, float, float],
-        rect2: Tuple[float, float, float, float]
-    ) -> bool:
-        """检查两个矩形是否重叠"""
-        return not (
-            rect1[2] <= rect2[0] or  # rect1 在 rect2 左侧
-            rect1[0] >= rect2[2] or  # rect1 在 rect2 右侧
-            rect1[3] <= rect2[1] or  # rect1 在 rect2 上方
-            rect1[1] >= rect2[3]     # rect1 在 rect2 下方
-        )
+        page,
+        page_num: int,
+        detect_tables: bool,
+        detect_images: bool
+    ) -> List[DetectedRegion]:
+        """检测单页中的区域"""
+        regions = []
 
-    def extract_tables_from_regions(
+        try:
+            # 获取文本块
+            blocks = page.get_text("blocks")
+
+            for block in blocks:
+                if block[6] == 0:  # 文本块
+                    region_type, confidence = self._classify_text_block(block, page)
+
+                    if region_type:
+                        region = DetectedRegion(
+                            region_type=region_type,
+                            text=block[4],
+                            bbox=block[:4],
+                            page=page_num,
+                            confidence=confidence
+                        )
+                        regions.append(region)
+
+            # 检测图片
+            if detect_images:
+                image_regions = self._detect_image_regions(page, page_num)
+                regions.extend(image_regions)
+
+            # 检测表格（简单实现）
+            if detect_tables:
+                table_regions = self._detect_table_regions(page, page_num)
+                regions.extend(table_regions)
+
+        except Exception as e:
+            self.logger.warning(f"检测第 {page_num} 页区域失败: {e}")
+
+        return regions
+
+    def _classify_text_block(self, block, page) -> tuple[str, float]:
+        """分类文本块"""
+        text = block[4].strip()
+        bbox = block[:4]
+
+        if not text:
+            return "unknown", 0.0
+
+        # 检查是否为标题
+        for pattern in self.title_patterns:
+            if re.match(pattern, text):
+                return "title", 0.9
+
+        # 根据字体大小判断
+        try:
+            # 获取块的字体信息
+            spans = page.get_text("dict")
+            for span in spans.get("blocks", []):
+                if "lines" in span:
+                    for line in span["lines"]:
+                        for s in line["spans"]:
+                            if text in s.get("text", ""):
+                                font_size = s.get("size", 12)
+                                if font_size > 16:
+                                    return "title", 0.8
+                                elif font_size < 10:
+                                    return "footnote", 0.7
+        except:
+            pass
+
+        # 检查是否为列表
+        if text.startswith(('•', '-', '*', '1.', '2.', '3.', '①', '②', '③')):
+            return "list", 0.85
+
+        # 默认为段落
+        return "paragraph", 0.7
+
+    def _detect_image_regions(self, page, page_num: int) -> List[DetectedRegion]:
+        """检测图片区域"""
+        regions = []
+        image_list = page.get_images()
+
+        for img_index, img in enumerate(image_list):
+            try:
+                # 获取图片位置
+                xref = img[0]
+                for img_info in page.get_image_rects(xref):
+                    region = DetectedRegion(
+                        region_type="image",
+                        text=f"[Image {img_index + 1}]",
+                        bbox=img_info[:4],
+                        page=page_num,
+                        confidence=0.95,
+                        metadata={'xref': xref}
+                    )
+                    regions.append(region)
+            except Exception as e:
+                self.logger.warning(f"检测图片失败: {e}")
+
+        return regions
+
+    def _detect_table_regions(self, page, page_num: int) -> List[DetectedRegion]:
+        """检测表格区域（简单实现）"""
+        # PyMuPDF 不直接支持表格检测
+        # 这里返回空列表，实际项目可以集成 camelot 或 pdfplumber
+        return []
+
+    def export_regions_to_dict(
         self,
         regions: List[DetectedRegion]
-    ) -> List[DetectedRegion]:
-        """从检测到的区域中提取表格"""
-        return [r for r in regions if r.region_type == 'table']
-
-    def extract_images_from_regions(
-        self,
-        regions: List[DetectedRegion]
-    ) -> List[DetectedRegion]:
-        """从检测到的区域中提取图片"""
-        return [r for r in regions if r.region_type == 'image']
-
+    ) -> List[Dict[str, Any]]:
+        """将区域列表导出为字典列表"""
+        return [region.to_dict() for region in regions]
 
 # 全局实例
 smart_region_detector = SmartRegionDetector()
+
+__all__ = ['SmartRegionDetector', 'smart_region_detector', 'DetectedRegion']

@@ -2,7 +2,7 @@
 知识图谱数据模型
 """
 
-from sqlalchemy import Column, Integer, String, Text, BigInteger, DateTime, ForeignKey, Enum, JSON, Float
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum, JSON, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -11,9 +11,9 @@ from app.core.database import Base
 
 
 class NodeType(str, enum.Enum):
+    # 基础实体类型
     ENTITY = "entity"
     CONCEPT = "concept"
-    RELATION = "relation"
     EVENT = "event"
     ORGANIZATION = "organization"
     PERSON = "person"
@@ -21,13 +21,33 @@ class NodeType(str, enum.Enum):
     DATE = "date"
     AMOUNT = "amount"
 
+    # 金融研报专用类型
+    STRATEGY = "strategy"  # 策略类型（择时、选股、均线、动量等）
+    INDICATOR = "indicator"  # 金融指标（PE、PB、ROE、夏普比率、最大回撤等）
+    MARKET_CONCEPT = "market_concept"  # 市场概念（行业、牛市、轮动、流动性等）
+    TIME_PERIOD = "time_period"  # 时间周期（月、周、短期、长期等）
+    QUANT_METHOD = "quant_method"  # 量化方法（趋势、震荡、移动平均、回归分析等）
+    METRIC = "metric"  # 数值指标（具体的数值，如"胜率76.9%"）
+
 
 class RelationType(str, enum.Enum):
+    # 通用关系
+    RELATED_TO = "related_to"
+    PART_OF = "part_of"
+    BELONGS_TO = "belongs_to"
+    CONTAINS = "contains"
+    LOCATED_IN = "located_in"
+
+    # 金融研报专用关系（基于历史数据分布）
+    PREDICTS = "predicts"  # 预测关系 (30.89%)
+    POSITIVELY_CORRELATED = "positively_correlated"  # 正相关关系 (30.87%)
+    INFLUENCES = "influences"  # 影响关系 (22.48%)
+    INCLUDES = "includes"  # 包含关系 (6.03%)
+    OUTPERFORMS = "outperforms"  # 优于关系 (5.87%)
+
+    # 其他保留关系
     OWNS = "owns"
     WORKS_FOR = "works_for"
-    LOCATED_IN = "located_in"
-    PART_OF = "part_of"
-    RELATED_TO = "related_to"
     INVESTS_IN = "invests_in"
     ACQUIRES = "acquires"
     MERGES_WITH = "merges_with"
@@ -41,6 +61,7 @@ class KnowledgeGraphNode(Base):
     __tablename__ = "knowledge_graph_nodes"
 
     id = Column(Integer, primary_key=True, index=True)
+    graph_id = Column(Integer, nullable=False, index=True)  # 图谱ID
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
 
     # 节点标识
@@ -78,54 +99,26 @@ class KnowledgeGraphNode(Base):
 
 class KnowledgeGraphRelation(Base):
     """知识图谱关系表"""
-    __tablename__ = "knowledge_graph_relations"
+    __tablename__ = "knowledge_graph_edges"
 
     id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
+    graph_id = Column(Integer, nullable=False, index=True)  # 图谱ID
 
-    # 关系标识
-    relation_id = Column(String(255), nullable=False, unique=True, index=True)  # Neo4j中的关系ID
-    neo4j_id = Column(String(255), index=True)  # Neo4j内部ID
+    # 关系两端（简化版）
+    source_id = Column(String(255), nullable=False, index=True)  # 源节点ID
+    target_id = Column(String(255), nullable=False, index=True)  # 目标节点ID
 
-    # 关系两端
-    source_node_id = Column(String(255), nullable=False, index=True)  # 源节点ID
-    target_node_id = Column(String(255), nullable=False, index=True)  # 目标节点ID
-    source_node_neo4j_id = Column(String(255), index=True)
-    target_node_neo4j_id = Column(String(255), index=True)
+    # 关系类型（存储为字符串，与RelationType枚举值对应）
+    edge_type = Column(String(100), index=True)  # 关系类型
 
-    # 关系信息
-    relation_type = Column(Enum(RelationType), nullable=False, index=True)
-    relation_label = Column(String(500))  # 关系标签
-    description = Column(Text)  # 关系描述
-
-    # 关系属性
-    properties = Column(JSON)  # 关系属性
-    attributes = Column(JSON)  # 详细属性
-    weight = Column(Float, default=1.0)  # 关系权重
-    confidence = Column(Float)  # 关系提取置信度
-    direction = Column(String(20), default="directed")  # directed, undirected
-
-    # 证据信息
-    evidence = Column(Text)  # 支持证据
-    source_text = Column(Text)  # 源文本
-    page_number = Column(Integer)
-    position = Column(JSON)  # 在文档中的位置
-    context = Column(Text)  # 上下文
-
-    # 验证信息
-    is_verified = Column(Integer, default=0)  # 是否已验证 (0/1)
-    verification_method = Column(String(100))  # 验证方法
-    verification_confidence = Column(Float)  # 验证置信度
+    # 关系属性（JSON格式存储所有额外信息）
+    properties = Column(JSON)  # 包含document_id, confidence, weight等
 
     # 时间信息
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    # 关系
-    document = relationship("Document", backref="kg_relations")
 
     def __repr__(self):
-        return f"<KnowledgeGraphRelation(id={self.id}, relation_id='{self.relation_id}', type='{self.relation_type}')>"
+        return f"<KnowledgeGraphRelation(id={self.id}, source_id='{self.source_id}', target_id='{self.target_id}', type='{self.edge_type}')>"
 
 
 class KnowledgeGraphPath(Base):

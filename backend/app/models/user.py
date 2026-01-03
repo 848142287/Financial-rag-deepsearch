@@ -80,7 +80,6 @@ class UserInDB(UserBase):
 # 简化的用户类，用于兼容性
 class User(UserResponse):
     """用户模型（兼容性）"""
-    pass
 
 
 class UserProfile(BaseModel):

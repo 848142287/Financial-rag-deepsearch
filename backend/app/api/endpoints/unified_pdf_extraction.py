@@ -8,24 +8,21 @@
 这些功能完全兼容现有系统，不影响现有功能
 """
 
-import io
 import os
 import tempfile
-import uuid
 from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import logging
+from app.core.structured_logging import get_structured_logger
 
 from app.services.parsers.advanced.unified_pdf_extractor import unified_pdf_extractor
 from app.services.parsers.advanced.smart_region_detector import smart_region_detector
 from app.core.config import settings
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 router = APIRouter()
 

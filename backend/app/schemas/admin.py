@@ -154,6 +154,7 @@ class TaskProgress(BaseModel):
         from_attributes = True
 
 
+# TODO: TaskStatus → core.TaskStatus
 class TaskStatus(BaseModel):
     """任务状态模式"""
     task_id: str

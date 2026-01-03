@@ -3,12 +3,11 @@
 提取表格结构化数据，识别表格类型
 """
 
-import logging
+from app.core.structured_logging import get_structured_logger
 import re
 from typing import Dict, Any, List, Optional
-import pandas as pd
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class TableExtractor:

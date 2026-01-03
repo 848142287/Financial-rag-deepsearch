@@ -2,12 +2,12 @@
 向量质量验证工具
 检测和过滤无效向量（零向量、NaN、Inf等）
 """
-import logging
+from app.core.structured_logging import get_structured_logger
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import numpy as np
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 @dataclass

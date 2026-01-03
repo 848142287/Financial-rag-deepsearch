@@ -3,9 +3,8 @@
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional
 from langchain_core.callbacks import BaseCallbackHandler
-import time
 
 class BaseMiddleware(BaseCallbackHandler, ABC):
     """
@@ -39,7 +38,6 @@ class BaseMiddleware(BaseCallbackHandler, ABC):
         Returns:
             处理后的输入参数
         """
-        pass
 
     @abstractmethod
     async def after_tool_run(
@@ -61,7 +59,6 @@ class BaseMiddleware(BaseCallbackHandler, ABC):
         Returns:
             处理后的输出结果
         """
-        pass
 
     async def on_tool_start(
         self,

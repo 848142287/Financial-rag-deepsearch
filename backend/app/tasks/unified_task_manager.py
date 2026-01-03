@@ -3,22 +3,21 @@
 将文档处理、搜索、分析等功能集中管理
 """
 
-from celery import current_task
-from app.core.celery import celery_app  # 使用主celery配置
-import logging
+from app.core.celery_config import celery_app
+import json
+from app.core.structured_logging import get_structured_logger
 import asyncio
-from typing import Dict, Any, List, Optional
+from typing import Dict, Optional
 from datetime import datetime
 
 # 导入统一服务整合器
 from app.services.core_service_integrator import get_service_integrator
 
-# 导入数据库相关 - 移到顶部避免作用域问题
+# 导入数据库相关
 from app.core.database import SessionLocal
 from app.models.document import Document
 
-logger = logging.getLogger(__name__)
-
+logger = get_structured_logger(__name__)
 
 def run_async(coro):
     """运行异步协程的同步包装器"""
@@ -29,12 +28,22 @@ def run_async(coro):
         asyncio.set_event_loop(loop)
     return loop.run_until_complete(coro)
 
-
-@celery_app.task(bind=True)
+@celery_app.task(
+    bind=True,
+    soft_time_limit=1800,  # 30分钟软超时
+    time_limit=2100,  # 35分钟硬超时
+    max_retries=2,
+    default_retry_delay=60
+)
 def process_document_unified(self, document_id: str, original_filename: str, user_id: str = None):
     """
     统一的文档处理任务
     整合所有分散的文档处理功能，使用统一的服务整合器
+
+    超时配置:
+    - soft_time_limit: 1800秒（30分钟）- 软超时，会抛出SoftTimeLimitExceeded
+    - time_limit: 2100秒（35分钟）- 硬超时，强制终止任务
+    - max_retries: 2 - 失败后重试2次
     """
     task_id = self.request.id
 
@@ -44,7 +53,7 @@ def process_document_unified(self, document_id: str, original_filename: str, use
             meta={'status': '初始化服务', 'progress': 5}
         )
 
-        # 获取统一服务整合器
+        logger.info("📦 使用CoreServiceIntegrator（稳定版）")
         integrator = get_service_integrator()
         run_async(integrator.initialize())
 
@@ -62,12 +71,17 @@ def process_document_unified(self, document_id: str, original_filename: str, use
             if not document:
                 raise Exception(f"文档不存在: {document_id}")
 
+            # 更新文档状态为"processing"（处理中）
+            document.status = 'processing'
+            document.error_message = None
+            db.commit()
+            logger.info(f"📝 文档 {document_id} 状态已更新为 processing")
+
             # 下载文件内容
             minio_service = MinIOService()
 
             async def get_file_content():
                 # 修复：移除 file_path 中的 'documents/' 前缀（如果存在）
-                # 因为 MinIO 中实际存储路径是 '2025/12/27/...' 而不是 'documents/2025/12/27/...'
                 actual_path = document.file_path
                 if actual_path.startswith('documents/'):
                     actual_path = actual_path[len('documents/'):]
@@ -87,10 +101,25 @@ def process_document_unified(self, document_id: str, original_filename: str, use
             meta={'status': '执行完整处理流水线', 'progress': 25}
         )
 
-        # 使用统一服务整合器处理文档
-        result = run_async(integrator.process_document_complete(
+        # 使用选定的处理器处理文档
+        result = run_async(integrator.process_document(
             file_content, original_filename, document_id
         ))
+
+        # 将result转换为JSON可序列化的格式
+        def make_json_serializable(obj):
+            """递归转换numpy数组和其他不可序列化的对象"""
+            import numpy as np
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: make_json_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [make_json_serializable(item) for item in obj]
+            else:
+                return obj
+
+        serializable_result = make_json_serializable(result)
 
         # 更新数据库
         db = SessionLocal()
@@ -99,13 +128,11 @@ def process_document_unified(self, document_id: str, original_filename: str, use
             if document:
                 # 更新处理状态和结果
                 document.processing_mode = "unified_pipeline"
-                # 正确存储：processing_result 存储元数据，parsed_content 存储文本内容
-                import json
-                document.processing_result = json.dumps(result, ensure_ascii=False)
+                document.processing_result = json.dumps(serializable_result, ensure_ascii=False)
 
                 # 从结果中提取文本内容
                 stages = result.get('stages', {})
-                if 'analysis' in stages:
+                if 'parsing' in stages:
                     # 尝试获取解析的文本
                     parsed_text = result.get('parsed_text', '')
                     markdown = result.get('markdown', '')
@@ -116,8 +143,22 @@ def process_document_unified(self, document_id: str, original_filename: str, use
                 if result.get('success'):
                     document.status = 'completed'
                     document.processed_at = datetime.now()
+
+                    # 🚀 触发后台异步enrichment任务（实体提取 + 知识图谱）
+                    try:
+                        from app.tasks.background_enrichment import enrich_document_async
+
+                        # 获取chunks数据
+                        chunks_data = result.get('chunks', [])
+
+                        # 异步触发enrichment任务，不阻塞主流程
+                        enrich_document_async.delay(str(document_id), chunks_data)
+                        logger.info(f"✅ 已触发后台enrichment任务: {document_id}")
+                    except Exception as e:
+                        logger.warning(f"触发后台enrichment任务失败（不影响主流程）: {e}")
+
                 else:
-                    document.status = 'PROCESSING_FAILED'
+                    document.status = 'processing_failed'
                     document.error_message = result.get('error', 'Unknown error')
 
                 db.commit()
@@ -141,7 +182,7 @@ def process_document_unified(self, document_id: str, original_filename: str, use
         try:
             document = db.query(Document).filter(Document.id == document_id).first()
             if document:
-                document.status = 'PROCESSING_FAILED'
+                document.status = 'processing_failed'
                 document.error_message = str(e)
                 db.commit()
         finally:
@@ -149,7 +190,6 @@ def process_document_unified(self, document_id: str, original_filename: str, use
 
         # 重试逻辑
         raise self.retry(exc=e, countdown=60, max_retries=3)
-
 
 @celery_app.task(bind=True)
 def search_documents_unified(self, query: str, top_k: int = 10, filters: Optional[Dict] = None):
@@ -193,7 +233,6 @@ def search_documents_unified(self, query: str, top_k: int = 10, filters: Optiona
         logger.error(f"❌ 统一搜索失败: {e}")
         raise self.retry(exc=e, countdown=30, max_retries=2)
 
-
 @celery_app.task(bind=True)
 def system_health_check(self):
     """
@@ -221,7 +260,6 @@ def system_health_check(self):
             'timestamp': datetime.now().isoformat(),
             'error': str(e)
         }
-
 
 # 向后兼容的别名
 process_document_complete = process_document_unified

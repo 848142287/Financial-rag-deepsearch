@@ -4,12 +4,12 @@ Redis客户端封装
 """
 
 import redis.asyncio as redis
-from typing import Any, Optional, List, Union
+from typing import Any, Optional, List
 import json
-import logging
+from app.core.structured_logging import get_structured_logger
 from .config import settings
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class RedisClient:

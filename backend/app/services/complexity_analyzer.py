@@ -4,15 +4,14 @@
 """
 
 import re
-import logging
-from typing import Dict, List, Optional, Tuple
+from app.core.structured_logging import get_structured_logger
+from typing import List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
 from app.services.sla_enforcement import RetrievalMode
-from app.core.config import settings
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class ComplexityLevel(Enum):

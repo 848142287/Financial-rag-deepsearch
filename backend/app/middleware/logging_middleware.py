@@ -2,12 +2,13 @@
 日志中间件
 """
 
-import json
+from app.core.structured_logging import get_structured_logger
 import time
 from typing import Dict, Any
 from app.middleware.base_middleware import BaseMiddleware
-from app.core.logging import logger
 from app.core.config import get_settings
+
+logger = get_structured_logger(__name__)
 
 class LoggingMiddleware(BaseMiddleware):
     """

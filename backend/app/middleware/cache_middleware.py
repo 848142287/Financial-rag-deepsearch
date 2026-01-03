@@ -9,7 +9,8 @@ from typing import Dict, Any, Optional
 from app.middleware.base_middleware import BaseMiddleware
 from app.services.redis_service import RedisService
 from app.core.config import get_settings
-from app.core.logging import logger
+from app.core.structured_logging import get_structured_logger
+logger = get_structured_logger(__name__)
 
 class CacheMiddleware(BaseMiddleware):
     """

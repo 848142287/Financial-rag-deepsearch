@@ -3,23 +3,15 @@
 定义各种后台处理任务
 """
 
-import asyncio
-import logging
-import os
-import json
+from app.core.structured_logging import get_structured_logger
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from celery import Task
 from celery.utils.log import get_task_logger
 
-from .celery_app import celery_app
-# from app.core.events import event_publisher
-# from app.core.events.event_types import EventType
+from app.core.celery_config import celery_app
 
-# Import document processing task
-# from app.tasks.document_tasks import process_document_task
-
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class BaseTask(Task):

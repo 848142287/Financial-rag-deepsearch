@@ -1,340 +1,275 @@
 """
-统一 PDF 提取服务
-支持快速模式（PyMuPDF4LLM）和精确模式（VLM）
-集成了 Multimodal_RAG 的提取功能，使用现有系统的配置
+统一 PDF 提取器
+提供快速和精确两种 PDF 解析模式
 """
 
-import io
-import base64
-import re
-import tempfile
-import shutil
 import os
-import asyncio
-from typing import Dict, List, Any, Optional, Tuple
-from pathlib import Path
+import fitz  # PyMuPDF
 from dataclasses import dataclass
-from datetime import datetime
-import logging
+import pypdf
 
-try:
-    import pymupdf4llm
-    import fitz  # PyMuPDF
-    from PIL import Image
-    from pdf2image import convert_from_bytes
-except ImportError as e:
-    print(f"警告: 缺少依赖库 {e}. 请安装: pip install pymupdf4llm pymupdf Pillow pdf2image")
-    raise
+from app.core.structured_logging import get_structured_logger
 
-from app.core.config import settings
-from app.services.llm_service import llm_service
-
-logger = logging.getLogger(__name__)
-
+logger = get_structured_logger(__name__)
 
 @dataclass
-class ExtractionResult:
-    """提取结果数据类"""
-    filename: str = ""
-    markdown_content: str = ""
-    tables: List[Dict[str, Any]] = None
-    formulas: List[Dict[str, Any]] = None
+class PDFExtractionResult:
+    """PDF 提取结果"""
+    success: bool
+    text: str = ""
+    pages: int = 0
     metadata: Dict[str, Any] = None
-    token_usage: Dict[str, int] = None
-    time_cost: Dict[str, float] = None
-    page_images: List[Any] = None
-    per_page_results: List[Dict[str, Any]] = None
+    images: List[Dict[str, Any]] = None
+    tables: List[Dict[str, Any]] = None
+    error: str = None
 
     def __post_init__(self):
-        if self.tables is None:
-            self.tables = []
-        if self.formulas is None:
-            self.formulas = []
         if self.metadata is None:
             self.metadata = {}
-        if self.token_usage is None:
-            self.token_usage = {}
-        if self.time_cost is None:
-            self.time_cost = {}
-        if self.page_images is None:
-            self.page_images = []
-        if self.per_page_results is None:
-            self.per_page_results = []
-
+        if self.images is None:
+            self.images = []
+        if self.tables is None:
+            self.tables = []
 
 class UnifiedPDFExtractor:
-    """统一 PDF 提取服务"""
+    """统一 PDF 提取器"""
 
     def __init__(self):
-        self.default_dpi = 100
-        self.default_pages_per_request = 1
+        self.logger = logger
 
     async def extract_fast(
         self,
         file_path: str,
-        original_filename: Optional[str] = None
-    ) -> Dict[str, Any]:
+        extract_images: bool = False,
+        extract_tables: bool = False
+    ) -> PDFExtractionResult:
         """
-        快速模式：使用 PyMuPDF4LLM 提取
-
-        特点：
-        1. 页码标记：在每页开头加 {{第X页}}，方便后续分页处理
-        2. 图片提取：提取 PDF 中的图片（不是截图整页），返回 base64
-        3. 给每页生成完整截图
-        """
-        logger.info("="*60)
-        logger.info("快速模式提取 - 使用 PyMuPDF4LLM")
-        logger.info("="*60)
-
-        # 获取文件名
-        filename = original_filename or Path(file_path).name
-
-        pdf_path = Path(file_path)
-        if not pdf_path.exists():
-            raise FileNotFoundError(f"文件不存在: {file_path}")
-
-        temp_dir = Path(tempfile.mkdtemp())
-        temp_images_dir = temp_dir / "images"
-        temp_images_dir.mkdir(exist_ok=True)
-
-        logger.info("正在提取 PDF 内容和图片...")
-
-        try:
-            # 使用 PyMuPDF4LLM 提取
-            md_data = pymupdf4llm.to_markdown(
-                str(pdf_path),
-                page_chunks=True,
-                write_images=True,
-                image_path=str(temp_images_dir),
-                image_format="png",
-                dpi=150
-            )
-
-            doc = fitz.open(str(pdf_path))
-            total_pages = len(doc)
-            logger.info(f"文档共 {total_pages} 页")
-
-            markdown_parts = []
-
-            # 处理 markdown 内容
-            if isinstance(md_data, list):
-                for idx, page_data in enumerate(md_data):
-                    page_num = idx + 1
-                    if isinstance(page_data, dict):
-                        text = page_data.get('text', '')
-                    else:
-                        text = str(page_data)
-
-                    text = text.replace(str(temp_images_dir.absolute()), "images")
-                    markdown_parts.append(f"{{{{第{page_num}页}}}}\n{text}\n")
-            else:
-                text = str(md_data)
-                text = text.replace(str(temp_images_dir.absolute()), "images")
-
-                if "-----" in text or "---" in text:
-                    pages = text.split("-----") if "-----" in text else text.split("---")
-                    for idx, page_text in enumerate(pages):
-                        if page_text.strip():
-                            page_num = idx + 1
-                            markdown_parts.append(f"{{{{第{page_num}页}}}}\n{page_text.strip()}\n")
-                else:
-                    for page_num in range(1, total_pages + 1):
-                        markdown_parts.append(f"{{{{第{page_num}页}}}}\n")
-                    markdown_parts.append(text)
-
-            # 收集提取的图片
-            logger.info("正在收集提取的图片...")
-            images_data = []
-
-            for img_file in sorted(temp_images_dir.glob("*.png")):
-                try:
-                    img = Image.open(img_file)
-                    buffer = io.BytesIO()
-                    img.save(buffer, format='PNG')
-                    buffer.seek(0)
-                    img_base64 = base64.b64encode(buffer.read()).decode('utf-8')
-
-                    img_filename = img_file.name
-                    page_num = 1
-                    match = re.search(r'(\d+)', img_filename)
-                    if match:
-                        page_num = int(match.group(1))
-
-                    images_data.append({
-                        "filename": img_filename,
-                        "base64": img_base64,
-                        "page_num": page_num
-                    })
-
-                    logger.info(f"  ✓ {img_filename}")
-
-                except Exception as e:
-                    logger.error(f"处理图片失败 {img_file.name}: {e}")
-
-            # 生成完整页面截图
-            logger.info("正在生成页面完整截图...")
-            for page_num in range(total_pages):
-                page = doc[page_num]
-                logger.info(f"  处理第 {page_num + 1}/{total_pages} 页")
-
-                try:
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                    img_data = pix.tobytes("png")
-                    img = Image.open(io.BytesIO(img_data))
-
-                    buffer = io.BytesIO()
-                    img.save(buffer, format='PNG')
-                    buffer.seek(0)
-                    img_base64 = base64.b64encode(buffer.read()).decode('utf-8')
-
-                    filename = f"page_{page_num + 1}_full.png"
-                    images_data.append({
-                        "filename": filename,
-                        "base64": img_base64,
-                        "page_num": page_num + 1
-                    })
-
-                    # 在 markdown 中添加截图链接
-                    markdown_parts.append(f"\n![{filename}](images/{filename})\n")
-                    pix = None
-
-                except Exception as e:
-                    logger.error(f"截图失败: {e}")
-
-            doc.close()
-
-            final_markdown = "".join(markdown_parts)
-
-            logger.info("="*60)
-            logger.info("✓ 快速提取完成")
-            logger.info(f"  - 页数: {total_pages}")
-            logger.info(f"  - 图片数: {len(images_data)}")
-            logger.info(f"  - Markdown长度: {len(final_markdown)} 字符")
-            logger.info("="*60)
-
-            return {
-                "filename": filename,
-                "markdown": final_markdown,
-                "images": images_data,
-                "metadata": {
-                    "total_pages": total_pages,
-                    "total_images": len(images_data),
-                    "extraction_mode": "fast"
-                }
-            }
-
-        finally:
-            # 清理临时目录
-            try:
-                shutil.rmtree(temp_dir)
-            except:
-                pass
-
-    async def extract_accurate(
-        self,
-        file_path: str,
-        original_filename: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        精确模式：使用现有系统的 Qwen VL 模型提取
-
-        特点：
-        1. 使用系统的 Qwen VL Plus 模型
-        2. 批量处理页面
-        3. 返回结构化的 JSON（markdown、表格、公式、图片描述）
-        """
-        logger.info("="*60)
-        logger.info(f"精确模式提取 - 使用 Qwen VL ({settings.qwen_multimodal_model})")
-        logger.info("="*60)
-
-        filename = original_filename or Path(file_path).name
-
-        # 使用系统的多模态提取器
-        from .enhanced_llm_multimodal_extractor import EnhancedLLMMultimodalExtractor
-
-        extractor = EnhancedLLMMultimodalExtractor(
-            pages_per_request=self.default_pages_per_request
-        )
-
-        result = await extractor.extract_from_pdf(file_path, original_filename=filename)
-
-        # 组装最终 markdown
-        markdown_parts = []
-        for page_result in result.per_page_results:
-            page_num = page_result['page_num']
-            page_markdown = page_result.get('markdown', '')
-
-            # 添加页码标识符（用于分隔不同页面）
-            markdown_parts.append(f"{{{{第{page_num}页}}}}\n{page_markdown}\n")
-
-        final_markdown = "".join(markdown_parts)
-
-        total_image_descriptions = sum(len(p.get('images', [])) for p in result.per_page_results)
-
-        logger.info("="*60)
-        logger.info("✓ 精确提取完成")
-        logger.info(f"  - 页数: {result.metadata['total_pages']}")
-        logger.info(f"  - 表格数: {result.metadata['total_tables']}")
-        logger.info(f"  - 公式数: {result.metadata['total_formulas']}")
-        logger.info(f"  - 图片描述: {total_image_descriptions} 个")
-        logger.info(f"  - Token使用: {result.token_usage['total_tokens']:,}")
-        logger.info(f"  - 耗时: {result.time_cost['total_time']}秒")
-        logger.info(f"  - Markdown长度: {len(final_markdown)} 字符")
-        logger.info("="*60)
-
-        return {
-            "filename": filename,
-            "markdown": final_markdown,
-            "images": [],  # 精确模式不返回图片 base64，因为图片描述已在 markdown 中
-            "metadata": {
-                "total_pages": result.metadata['total_pages'],
-                "total_tables": result.metadata['total_tables'],
-                "total_formulas": result.metadata['total_formulas'],
-                "total_image_descriptions": total_image_descriptions,
-                "token_usage": result.token_usage,
-                "time_cost": result.time_cost,
-                "extraction_mode": "accurate"
-            }
-        }
-
-    async def extract_with_auto_mode(
-        self,
-        file_path: str,
-        original_filename: Optional[str] = None,
-        force_mode: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        自动模式：根据文件大小和页数自动选择提取模式
+        快速提取模式 - 使用 PyPDF2，速度快但精度一般
 
         Args:
             file_path: PDF 文件路径
-            original_filename: 原始文件名
-            force_mode: 强制使用的模式 ("fast" 或 "accurate")
+            extract_images: 是否提取图片
+            extract_tables: 是否提取表格
 
         Returns:
-            提取结果
+            PDFExtractionResult: 提取结果
         """
-        if force_mode:
-            logger.info(f"使用强制模式: {force_mode}")
-            if force_mode == "fast":
-                return await self.extract_fast(file_path, original_filename)
+        try:
+            self.logger.info(f"快速提取模式: {file_path}")
+
+            # 使用 pypdf 快速提取文本
+            with open(file_path, 'rb') as f:
+                pdf_reader = pypdf.PdfReader(f)
+
+                # 获取元数据
+                metadata = self._extract_metadata_pypdf(pdf_reader)
+
+                # 提取文本
+                text_content = []
+                for page_num, page in enumerate(pdf_reader.pages):
+                    try:
+                        text = page.extract_text()
+                        if text.strip():
+                            text_content.append({
+                                'page': page_num + 1,
+                                'text': text
+                            })
+                    except Exception as e:
+                        self.logger.warning(f"提取第 {page_num + 1} 页失败: {e}")
+
+                # 合并文本
+                full_text = "\n\n".join([page['text'] for page in text_content])
+
+                return PDFExtractionResult(
+                    success=True,
+                    text=full_text,
+                    pages=len(pdf_reader.pages),
+                    metadata=metadata
+                )
+
+        except Exception as e:
+            self.logger.error(f"快速提取失败: {e}")
+            return PDFExtractionResult(
+                success=False,
+                error=str(e)
+            )
+
+    async def extract_full(
+        self,
+        file_path: str,
+        extract_images: bool = True,
+        extract_tables: bool = True,
+        ocr_enabled: bool = False
+    ) -> PDFExtractionResult:
+        """
+        完整提取模式 - 使用 PyMuPDF，精度高且支持更多功能
+
+        Args:
+            file_path: PDF 文件路径
+            extract_images: 是否提取图片
+            extract_tables: 是否提取表格
+            ocr_enabled: 是否启用 OCR
+
+        Returns:
+            PDFExtractionResult: 提取结果
+        """
+        try:
+            self.logger.info(f"完整提取模式: {file_path}")
+
+            # 使用 PyMuPDF (fitz) 提取
+            doc = fitz.open(file_path)
+
+            # 提取元数据
+            metadata = self._extract_metadata_fitx(doc)
+
+            # 提取文本和图片
+            text_content = []
+            images = []
+            tables = []
+
+            for page_num in range(doc.page_count):
+                page = doc[page_num]
+
+                # 提取文本
+                text = page.get_text("text")
+                if text.strip():
+                    text_content.append({
+                        'page': page_num + 1,
+                        'text': text
+                    })
+
+                # 提取图片
+                if extract_images:
+                    page_images = self._extract_images_from_page(page, page_num + 1)
+                    images.extend(page_images)
+
+                # 提取表格（简单实现）
+                if extract_tables:
+                    page_tables = self._extract_tables_from_page(page, page_num + 1)
+                    tables.extend(page_tables)
+
+            # 合并文本
+            full_text = "\n\n".join([page['text'] for page in text_content])
+
+            doc.close()
+
+            return PDFExtractionResult(
+                success=True,
+                text=full_text,
+                pages=doc.page_count,
+                metadata=metadata,
+                images=images if extract_images else [],
+                tables=tables if extract_tables else []
+            )
+
+        except Exception as e:
+            self.logger.error(f"完整提取失败: {e}")
+            return PDFExtractionResult(
+                success=False,
+                error=str(e)
+            )
+
+    def _extract_metadata_pypdf(self, pdf_reader) -> Dict[str, Any]:
+        """从 PyPDF 提取元数据"""
+        metadata = {}
+
+        if pdf_reader.metadata:
+            metadata = {
+                'title': pdf_reader.metadata.get('/Title', ''),
+                'author': pdf_reader.metadata.get('/Author', ''),
+                'subject': pdf_reader.metadata.get('/Subject', ''),
+                'creator': pdf_reader.metadata.get('/Creator', ''),
+                'producer': pdf_reader.metadata.get('/Producer', ''),
+                'creation_date': pdf_reader.metadata.get('/CreationDate', ''),
+            }
+
+        metadata['pages'] = len(pdf_reader.pages)
+        return metadata
+
+    def _extract_metadata_fitx(self, doc) -> Dict[str, Any]:
+        """从 PyMuPDF 提取元数据"""
+        metadata = {
+            'pages': doc.page_count,
+            'title': doc.metadata.get('title', ''),
+            'author': doc.metadata.get('author', ''),
+            'subject': doc.metadata.get('subject', ''),
+            'keywords': doc.metadata.get('keywords', ''),
+            'creator': doc.metadata.get('creator', ''),
+            'producer': doc.metadata.get('producer', ''),
+        }
+        return metadata
+
+    def _extract_images_from_page(self, page, page_num: int) -> List[Dict[str, Any]]:
+        """从页面提取图片"""
+        images = []
+        image_list = page.get_images()
+
+        for img_index, img in enumerate(image_list):
+            try:
+                xref = img[0]
+                base_image = page.parent.extract_image(xref)
+
+                if base_image:
+                    image_info = {
+                        'page': page_num,
+                        'index': img_index,
+                        'xref': xref,
+                        'width': base_image.get('width', 0),
+                        'height': base_image.get('height', 0),
+                        'format': base_image.get('ext', ''),
+                        'size': len(base_image.get('image', b''))
+                    }
+                    images.append(image_info)
+            except Exception as e:
+                self.logger.warning(f"提取图片失败: {e}")
+
+        return images
+
+    def _extract_tables_from_page(self, page, page_num: int) -> List[Dict[str, Any]]:
+        """从页面提取表格（简单实现）"""
+        # PyMuPDF 不直接支持表格提取，这里返回空列表
+        # 实际项目中可以集成 pdfplumber 或 camelot
+        return []
+
+    async def extract_from_bytes(
+        self,
+        file_bytes: bytes,
+        mode: str = 'fast',
+        **kwargs
+    ) -> PDFExtractionResult:
+        """
+        从字节流提取 PDF 内容
+
+        Args:
+            file_bytes: PDF 文件字节流
+            mode: 提取模式 ('fast' 或 'full')
+            **kwargs: 其他参数
+
+        Returns:
+            PDFExtractionResult: 提取结果
+        """
+        import tempfile
+
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            tmp_file.write(file_bytes)
+            tmp_file_path = tmp_file.name
+
+        try:
+            # 根据模式选择提取方法
+            if mode == 'fast':
+                result = await self.extract_fast(tmp_file_path, **kwargs)
             else:
-                return await self.extract_accurate(file_path, original_filename)
+                result = await self.extract_full(tmp_file_path, **kwargs)
 
-        # 自动判断
-        doc = fitz.open(file_path)
-        page_count = len(doc)
-        file_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
-        doc.close()
+            return result
 
-        # 判断逻辑：页数 > 20 或文件大小 > 50MB 使用快速模式
-        if page_count > 20 or file_size > 50:
-            logger.info(f"自动选择快速模式 (页数: {page_count}, 文件大小: {file_size:.2f}MB)")
-            return await self.extract_fast(file_path, original_filename)
-        else:
-            logger.info(f"自动选择精确模式 (页数: {page_count}, 文件大小: {file_size:.2f}MB)")
-            return await self.extract_accurate(file_path, original_filename)
-
+        finally:
+            # 删除临时文件
+            if os.path.exists(tmp_file_path):
+                os.unlink(tmp_file_path)
 
 # 全局实例
 unified_pdf_extractor = UnifiedPDFExtractor()
+
+__all__ = ['UnifiedPDFExtractor', 'unified_pdf_extractor', 'PDFExtractionResult']

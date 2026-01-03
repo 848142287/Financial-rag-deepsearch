@@ -1,22 +1,86 @@
 """
-基础文件解析器抽象类
+统一文件解析器基类
+整合了base.py和refactored/parser_base.py的功能
 """
 
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-import logging
+from app.core.structured_logging import get_structured_logger
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
+
+
+# ============================================================================
+# 数据类定义
+# ============================================================================
+
+@dataclass
+class DocumentMetadata:
+    """文档元数据"""
+    file_type: str
+    title: str = ''
+    author: str = ''
+    subject: str = ''
+    keywords: str = ''
+    created: str = ''
+    modified: str = ''
+    page_count: int = 0
+    paragraph_count: int = 0
+    total_tables: int = 0
+    total_images: int = 0
+    heading_count: int = 0
+    sheet_count: int = 0
+    slide_count: int = 0
+    chart_count: int = 0
+    file_size: int = 0
+    language: str = ''
+
+
+@dataclass
+class SectionData:
+    """章节数据"""
+    level: int
+    title: str
+    content: str
+    page_range: tuple = ()
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TableData:
+    """表格数据"""
+    rows: List[List[str]]
+    headers: List[str]
+    page_info: Dict[str, Any]
+    caption: str = ''
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ImageData:
+    """图片数据"""
+    image_bytes: bytes
+    page_info: Dict[str, Any]
+    caption: str = ''
+    image_type: str = ''
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class ParseResult:
-    """解析结果数据类"""
-    content: str
-    metadata: Dict[str, Any]
+    """解析结果数据类（统一版本）"""
     success: bool
+    content: str = ''
+    markdown: str = ''
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    chunks: List[Dict[str, Any]] = field(default_factory=list)
+    images: List[Dict[str, Any]] = field(default_factory=list)
+    tables: List[Dict[str, Any]] = field(default_factory=list)
+    processing_stats: Dict[str, Any] = field(default_factory=dict)
+
+    # 兼容旧版字段
     error_message: Optional[str] = None
     parse_time: Optional[float] = None
     file_size: Optional[int] = None
@@ -25,9 +89,14 @@ class ParseResult:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            'content': self.content,
-            'metadata': self.metadata,
             'success': self.success,
+            'content': self.content,
+            'markdown': self.markdown,
+            'metadata': self.metadata,
+            'chunks': self.chunks,
+            'images': self.images,
+            'tables': self.tables,
+            'processing_stats': self.processing_stats,
             'error_message': self.error_message,
             'parse_time': self.parse_time,
             'file_size': self.file_size,
@@ -55,38 +124,41 @@ class DocumentChunk:
         }
 
 
+# ============================================================================
+# 基类定义
+# ============================================================================
+
 class BaseFileParser(ABC):
-    """文件解析器基类"""
+    """
+    文件解析器基类（功能完整版）
+
+    提供文件解析的通用功能和接口
+    """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self._logger = get_structured_logger(self.__class__.__name__)
 
     @property
     @abstractmethod
     def supported_extensions(self) -> List[str]:
         """支持的文件扩展名列表"""
-        pass
 
     @property
     @abstractmethod
     def parser_name(self) -> str:
         """解析器名称"""
-        pass
 
     @abstractmethod
     def can_parse(self, file_path: str, file_extension: str = None) -> bool:
         """检查是否能解析指定文件"""
-        pass
 
     @abstractmethod
     async def parse(self, file_path: str, **kwargs) -> ParseResult:
         """解析文件内容"""
-        pass
 
     async def parse_with_metadata(self, file_path: str, **kwargs) -> ParseResult:
         """带元数据的文件解析"""
-        import os
         import time
         from pathlib import Path
 
@@ -113,18 +185,18 @@ class BaseFileParser(ABC):
             result.file_size = file_size
             result.parse_time = time.time() - start_time
 
-            self.logger.info(f"Successfully parsed file: {file_path} with {self.parser_name}")
+            self._logger.info(f"Successfully parsed file: {file_path} with {self.parser_name}")
             return result
 
         except Exception as e:
             parse_time = time.time() - start_time
             error_msg = f"Failed to parse file {file_path}: {str(e)}"
-            self.logger.error(error_msg, exc_info=True)
+            self._logger.error(error_msg, exc_info=True)
 
             return ParseResult(
+                success=False,
                 content="",
                 metadata={'error_details': str(e)},
-                success=False,
                 error_message=error_msg,
                 parse_time=parse_time,
                 file_size=file_path_obj.stat().st_size if file_path_obj.exists() else 0
@@ -140,10 +212,10 @@ class BaseFileParser(ABC):
                 result = chardet.detect(raw_data)
                 return result.get('encoding')
         except ImportError:
-            self.logger.warning("chardet not installed, using default encoding")
+            self._logger.warning("chardet not installed, using default encoding")
             return None
         except Exception as e:
-            self.logger.error(f"Failed to detect encoding for {file_path}: {str(e)}")
+            self._logger.error(f"Failed to detect encoding for {file_path}: {str(e)}")
             return None
 
     def validate_file(self, file_path: str) -> Tuple[bool, Optional[str]]:
@@ -278,21 +350,157 @@ class BaseFileParser(ABC):
         }
 
 
+class BaseDocumentParser(ABC):
+    """
+    高级文档解析器基类（模板方法模式）
+
+    为需要提取结构化数据的解析器提供模板方法
+    适用于PDF、Office等复杂文档格式
+    """
+
+    def __init__(self, config: dict = None):
+        self.config = config or {}
+        self._logger = get_structured_logger(self.__class__.__name__)
+
+    @abstractmethod
+    async def _open_document(self, file_path: str) -> Any:
+        """打开文档"""
+        pass
+
+    @abstractmethod
+    async def _close_document(self, doc: Any):
+        """关闭文档"""
+        pass
+
+    @abstractmethod
+    async def _extract_metadata(self, doc: Any) -> DocumentMetadata:
+        """提取元数据"""
+        pass
+
+    @abstractmethod
+    async def _extract_text(self, doc: Any) -> str:
+        """提取文本"""
+        pass
+
+    @abstractmethod
+    async def _extract_sections(self, doc: Any) -> List[SectionData]:
+        """提取章节结构"""
+        pass
+
+    @abstractmethod
+    async def _extract_tables(self, doc: Any) -> List[TableData]:
+        """提取表格"""
+        pass
+
+    @abstractmethod
+    async def _extract_images(self, doc: Any) -> List[ImageData]:
+        """提取图片"""
+        pass
+
+    async def parse(self, file_path: str) -> ParseResult:
+        """
+        解析文档（主流程 - 模板方法）
+        子类可以重写此方法以提供自定义流程
+        """
+        try:
+            # 打开文档
+            doc = await self._open_document(file_path)
+
+            try:
+                # 提取元数据
+                metadata = await self._extract_metadata(doc)
+
+                # 提取内容
+                text = await self._extract_text(doc)
+                sections = await self._extract_sections(doc)
+                tables = await self._extract_tables(doc)
+                images = await self._extract_images(doc)
+
+                # 转换为markdown
+                markdown = self._convert_to_markdown(
+                    text=text,
+                    sections=sections,
+                    tables=tables,
+                    images=images
+                )
+
+                # 构建结果
+                return ParseResult(
+                    success=True,
+                    content=text,
+                    markdown=markdown,
+                    metadata={
+                        'file_info': metadata.__dict__,
+                        'sections': [s.__dict__ for s in sections],
+                        'tables_count': len(tables),
+                        'images_count': len(images)
+                    },
+                    tables=[t.__dict__ for t in tables],
+                    images=[{
+                        'image_data': i.image_bytes,
+                        'page_info': i.page_info,
+                        'caption': i.caption,
+                        'type': i.image_type
+                    } for i in images]
+                )
+
+            finally:
+                await self._close_document(doc)
+
+        except Exception as e:
+            self._logger.error(f"解析失败: {e}", exc_info=True)
+            return ParseResult(
+                success=False,
+                metadata={'error': str(e)}
+            )
+
+    def _convert_to_markdown(
+        self,
+        text: str,
+        sections: List[SectionData],
+        tables: List[TableData],
+        images: List[ImageData]
+    ) -> str:
+        """转换为Markdown格式"""
+        md_parts = []
+
+        # 添加标题
+        for section in sections:
+            prefix = '#' * section.level
+            md_parts.append(f"{prefix} {section.title}\n")
+            md_parts.append(f"{section.content}\n")
+
+        # 添加文本
+        if text:
+            md_parts.append(text)
+
+        # 添加表格
+        for table in tables:
+            if table.headers:
+                md_parts.append(f"| {' | '.join(table.headers)} |")
+                md_parts.append(f"| {'| '.join(['---'] * len(table.headers))} |")
+                for row in table.rows:
+                    md_parts.append(f"| {' | '.join(row)} |")
+            md_parts.append("\n")
+
+        return "\n".join(md_parts)
+
+
+# ============================================================================
+# 异常类定义
+# ============================================================================
+
 class ParserError(Exception):
     """解析器异常基类"""
-    pass
 
 
 class UnsupportedFileTypeError(ParserError):
     """不支持的文件类型异常"""
-    pass
 
 
 class FileParsingError(ParserError):
     """文件解析异常"""
-    pass
 
 
 class FileValidationError(ParserError):
     """文件验证异常"""
-    pass

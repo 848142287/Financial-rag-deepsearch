@@ -67,7 +67,7 @@ def verify_token(token: str) -> TokenData:
         )
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
-    """获取当前用户"""
+    """获取当前用户（需要认证）"""
     token_data = verify_token(credentials.credentials)
 
     # 这里应该从数据库获取用户信息
@@ -79,6 +79,36 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     )
 
     return user
+
+
+def get_current_user_optional(credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False))) -> Optional[User]:
+    """获取当前用户（可选认证，用于允许匿名访问的端点）"""
+    if credentials is None:
+        # 没有提供token，返回默认用户
+        return User(
+            id="anonymous",
+            username="anonymous",
+            email="anonymous@local",
+            is_active=True
+        )
+
+    try:
+        token_data = verify_token(credentials.credentials)
+        user = User(
+            id=token_data.user_id or "default_user",
+            username=token_data.username or "default_user",
+            email=f"{token_data.username}@example.com",
+            is_active=True
+        )
+        return user
+    except JWTError:
+        # Token无效，返回默认用户
+        return User(
+            id="anonymous",
+            username="anonymous",
+            email="anonymous@local",
+            is_active=True
+        )
 
 def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
     """获取当前活跃用户"""

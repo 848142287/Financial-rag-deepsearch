@@ -38,7 +38,6 @@ class ConversationBase(BaseModel):
 class ConversationCreate(ConversationBase):
     """对话创建模式"""
     # 可以接受空的title，将使用默认值
-    pass
 
 
 class Conversation(ConversationBase):
@@ -54,7 +53,6 @@ class Conversation(ConversationBase):
 
 class ConversationWithMessages(Conversation):
     """包含消息的对话模式"""
-    pass
 
 
 class WebSocketMessage(BaseModel):

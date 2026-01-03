@@ -2,7 +2,7 @@
 MinIO对象存储服务
 """
 
-import logging
+from app.core.structured_logging import get_structured_logger
 from typing import List, Optional, Dict, Any
 from minio import Minio
 from minio.error import S3Error
@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class MinIOService:
@@ -442,3 +442,7 @@ class MinIOService:
         except S3Error as e:
             logger.error(f"Failed to cleanup temp images: {e}")
             return 0
+# 兼容性别名
+MinioService = MinIOService
+
+__all__ = ['MinIOService', 'MinioService']

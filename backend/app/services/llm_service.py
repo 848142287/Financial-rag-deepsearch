@@ -1,82 +1,135 @@
 """
 大语言模型服务
-支持DeepSeek和Qwen等多种模型
+支持主模型和备份模型的自动切换
+
+配置说明：
+- 主模型：Deepseek（deepseek-chat）
+- 备份模型：GLM-4.7（智谱AI）
 """
 
-from typing import List, Dict, Any, Optional
 import openai
-import logging
-# from tenacity import retry, stop_after_attempt, wait_exponential  # TODO: 安装tenacity依赖
+from typing import List, Dict, Any, Optional
+from app.core.structured_logging import get_structured_logger
 
 from app.core.config import settings
 
-logger = logging.getLogger(__name__)
-
+logger = get_structured_logger(__name__)
 
 class LLMService:
-    """大语言模型服务"""
+    """大语言模型服务 - 支持主模型和备份模型自动切换
+
+    配置说明：
+    - 主模型：Deepseek（deepseek-chat）
+    - 备份模型：GLM-4.7（智谱AI）
+
+    自动切换逻辑：
+    1. 优先使用主模型（Deepseek）
+    2. 主模型失败时，自动切换到备份模型（GLM-4.7）
+    3. 可通过配置禁用自动切换
+    """
 
     def __init__(self):
-        # DeepSeek客户端配置 - 优先使用环境变量中的配置
-        api_key = getattr(settings, 'deepseek_api_key', None) or settings.openai_api_key
-        base_url = getattr(settings, 'deepseek_base_url', None) or settings.openai_base_url
+        # 从settings中读取配置
+        self.primary_model = settings.primary_llm_model  # "deepseek"
+        self.fallback_model = settings.fallback_llm_model  # "glm"
+        self.fallback_enabled = True  # 默认启用自动切换
 
-        logger.info(f"初始化DeepSeek客户端:")
-        logger.info(f"  API Key: {api_key[:20]}...{api_key[-5:] if api_key else 'None'}")
-        logger.info(f"  Base URL: {base_url}")
-        logger.info(f"  Model: {settings.llm_model}")
+        # 初始化Deepseek客户端（主模型）
+        deepseek_api_key = getattr(settings, 'deepseek_api_key', None)
+        deepseek_base_url = getattr(settings, 'deepseek_base_url', None)
 
-        self.deepseek_client = openai.OpenAI(
-            api_key=api_key,
-            base_url=base_url
-        )
-
-        # Qwen客户端配置
-        logger.info(f"初始化Qwen客户端:")
-        if settings.qwen_api_key:
-            logger.info(f"  API Key: {settings.qwen_api_key[:20]}...{settings.qwen_api_key[-5:]}")
+        if deepseek_api_key:
+            self.deepseek_client = openai.OpenAI(
+                api_key=deepseek_api_key,
+                base_url=deepseek_base_url
+            )
+            logger.info("✓ Deepseek (主模型) 客户端初始化成功")
         else:
-            logger.warning("  API Key: Not configured (Qwen API will not be available)")
-        logger.info(f"  Base URL: {settings.qwen_base_url}")
+            self.deepseek_client = None
+            logger.warning("✗ Deepseek API Key未配置")
 
-        self.qwen_client = openai.OpenAI(
-            api_key=settings.qwen_api_key,
-            base_url=settings.qwen_base_url
-        )
+        # 初始化GLM-4.7客户端（备份模型）
+        glm_api_key = getattr(settings, 'glm_api_key', None)
+        glm_base_url = getattr(settings, 'glm_base_url', None)
 
-    # @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))  # TODO: 安装tenacity依赖
+        if glm_api_key:
+            self.glm_client = openai.OpenAI(
+                api_key=glm_api_key,
+                base_url=glm_base_url
+            )
+            logger.info("✓ GLM-4.7 (备份模型) 客户端初始化成功")
+        else:
+            self.glm_client = None
+            logger.warning("✗ GLM-4.7 API Key未配置")
+
+        logger.info("="*80)
+        logger.info(f"🎯 LLM服务初始化完成")
+        logger.info(f"  - 主模型: {self._get_model_name(self.primary_model)}")
+        logger.info(f"  - 备份模型: {self._get_model_name(self.fallback_model)}")
+        logger.info(f"  - 自动切换: {'启用' if self.fallback_enabled else '禁用'}")
+        logger.info("="*80)
+
+        self.current_model = self.primary_model  # 当前使用的模型
+
+    def _get_model_name(self, model_key: str) -> str:
+        """获取模型的显示名称"""
+        model_names = {
+            "deepseek": "Deepseek (deepseek-chat)",
+            "glm": "GLM-4.7 (智谱AI)",
+            "qwen": "Qwen (通义千问)"
+        }
+        return model_names.get(model_key, model_key)
+
+    def _get_client_and_model(self, model_key: str):
+        """获取模型对应的客户端和模型名称"""
+        if model_key == "deepseek":
+            return self.deepseek_client, settings.deepseek_model
+        elif model_key == "glm":
+            return self.glm_client, settings.glm_model
+        else:
+            raise ValueError(f"不支持的模型: {model_key}")
+
+    # 使用统一的重试机制 (app.core.retry)
+    # 如需重试功能，使用 @retry_on_failure 装饰器
     async def chat_completion(
         self,
         messages: List[Dict[str, str]],
         model: str = None,
         temperature: float = 0.7,
         max_tokens: int = 4000,
-        stream: bool = False,
-        use_qwen: bool = False
+        stream: bool = False
     ) -> Dict[str, Any]:
         """
-        聊天完成接口
+        聊天完成接口 - 支持自动切换到备份模型
 
         Args:
             messages: 消息列表
-            model: 模型名称
+            model: 模型名称（可选），不指定则使用主模型
             temperature: 温度参数
             max_tokens: 最大token数
             stream: 是否流式返回
-            use_qwen: 是否使用Qwen模型
 
         Returns:
             模型响应结果
         """
-        try:
-            # 选择客户端和模型
-            client = self.qwen_client if use_qwen else self.deepseek_client
-            model = model or (settings.qwen_multimodal_model if use_qwen else settings.llm_model)
+        # 确定使用的模型
+        model_key = model or self.current_model
 
-            logger.info("="*60)
-            logger.info(f"🚀 调用LLM模型")
-            logger.info(f"  模型: {model}")
-            logger.info(f"  使用Qwen: {use_qwen}")
+        # 验证模型是否可用
+        if model_key not in [self.primary_model, self.fallback_model]:
+            logger.warning(f"⚠ 指定的模型 {model_key} 不可用，使用主模型")
+            model_key = self.primary_model
+
+        try:
+            # 获取客户端和模型名称
+            client, model_name = self._get_client_and_model(model_key)
+
+            if client is None:
+                raise ValueError(f"模型 {model_key} 的客户端未初始化")
+
+            logger.info("="*80)
+            logger.info(f"🚀 调用LLM模型: {self._get_model_name(model_key)}")
+            logger.info(f"  模型: {model_name}")
             logger.info(f"  Temperature: {temperature}")
             logger.info(f"  Max Tokens: {max_tokens}")
             logger.info(f"  消息数量: {len(messages)}")
@@ -88,10 +141,10 @@ class LLMService:
                 content = msg.get('content', '')[:200]
                 logger.info(f"  消息{i+1} [{role}]: {content}...")
 
-            logger.info("="*60)
+            logger.info("="*80)
 
             response = client.chat.completions.create(
-                model=model,
+                model=model_name,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -109,28 +162,42 @@ class LLMService:
                         "completion_tokens": response.usage.completion_tokens,
                         "total_tokens": response.usage.total_tokens
                     },
-                    "model": model,
+                    "model": model_name,
+                    "model_key": model_key,
                     "finish_reason": response.choices[0].finish_reason
                 }
 
-                logger.info("="*60)
-                logger.info(f"✓ LLM调用成功")
+                logger.info("="*80)
+                logger.info(f"✓ LLM调用成功: {self._get_model_name(model_key)}")
                 logger.info(f"  模型: {result['model']}")
                 logger.info(f"  Token使用: {result['usage']['total_tokens']}")
                 logger.info(f"    - Prompt: {result['usage']['prompt_tokens']}")
                 logger.info(f"    - Completion: {result['usage']['completion_tokens']}")
                 logger.info(f"  完成原因: {result['finish_reason']}")
                 logger.info(f"  响应内容: {result['content'][:200]}...")
-                logger.info("="*60)
+                logger.info("="*80)
 
                 return result
 
         except Exception as e:
-            logger.error("="*60)
-            logger.error(f"✗ LLM调用失败")
+            logger.error("="*80)
+            logger.error(f"✗ 模型 {self._get_model_name(model_key)} 调用失败")
             logger.error(f"  错误类型: {type(e).__name__}")
             logger.error(f"  错误信息: {str(e)}")
-            logger.error("="*60)
+            logger.error("="*80)
+
+            # 尝试使用备份模型
+            if self.fallback_enabled and model_key != self.fallback_model:
+                logger.info(f"🔄 自动切换到备份模型: {self._get_model_name(self.fallback_model)}")
+                self.current_model = self.fallback_model
+                return await self.chat_completion(
+                    messages=messages,
+                    model=self.fallback_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=stream
+                )
+
             raise
 
     async def simple_chat(
@@ -138,8 +205,7 @@ class LLMService:
         prompt: str,
         system_prompt: str = None,
         model: str = None,
-        temperature: float = 0.7,
-        use_qwen: bool = False
+        temperature: float = 0.7
     ) -> str:
         """
         简单聊天接口
@@ -149,7 +215,6 @@ class LLMService:
             system_prompt: 系统提示
             model: 模型名称
             temperature: 温度参数
-            use_qwen: 是否使用Qwen模型
 
         Returns:
             模型回复文本
@@ -164,8 +229,7 @@ class LLMService:
         response = await self.chat_completion(
             messages=messages,
             model=model,
-            temperature=temperature,
-            use_qwen=use_qwen
+            temperature=temperature
         )
 
         return response["content"]
@@ -175,8 +239,7 @@ class LLMService:
         prompt: str,
         schema: Dict[str, Any],
         system_prompt: str = None,
-        model: str = None,
-        use_qwen: bool = False
+        model: str = None
     ) -> Dict[str, Any]:
         """
         结构化输出完成
@@ -186,7 +249,6 @@ class LLMService:
             schema: 输出结构schema
             system_prompt: 系统提示
             model: 模型名称
-            use_qwen: 是否使用Qwen模型
 
         Returns:
             结构化输出结果
@@ -200,8 +262,7 @@ class LLMService:
         response = await self.simple_chat(
             prompt=prompt,
             system_prompt=system_prompt,
-            model=model,
-            use_qwen=use_qwen
+            model=model
         )
 
         try:
@@ -210,7 +271,6 @@ class LLMService:
         except json.JSONDecodeError:
             logger.error(f"结构化输出解析失败: {response}")
             raise ValueError("模型返回的JSON格式不正确")
-
 
 # 全局LLM服务实例
 llm_service = LLMService()

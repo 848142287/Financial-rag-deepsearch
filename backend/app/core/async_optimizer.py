@@ -4,13 +4,12 @@
 """
 
 import asyncio
-import logging
+from app.core.structured_logging import get_structured_logger
 from typing import List, Dict, Any, Callable, Optional, TypeVar, Coroutine
 from dataclasses import dataclass
-from datetime import datetime
 import time
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 T = TypeVar('T')
 

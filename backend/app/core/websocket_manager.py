@@ -5,16 +5,16 @@ WebSocket连接管理器
 
 import asyncio
 import json
-import logging
+from app.core.structured_logging import get_structured_logger
 from typing import Dict, List, Set, Any, Optional
 from datetime import datetime
 import uuid
 from enum import Enum
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 from app.core.redis_client import redis_client
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class MessageType(Enum):

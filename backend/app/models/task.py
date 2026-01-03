@@ -8,8 +8,10 @@ from sqlalchemy.sql import func
 import enum
 
 from app.core.database import Base
+from app.core.enum_utils import CaseInsensitiveEnum
 
 
+# TODO: TaskStatus → core.TaskStatus
 class TaskStatus(str, enum.Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -49,8 +51,8 @@ class Task(Base):
     parent_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True, index=True)
 
     # 任务状态
-    status = Column(Enum(TaskStatus), default=TaskStatus.PENDING, index=True)
-    priority = Column(Enum(TaskPriority), default=TaskPriority.MEDIUM, index=True)
+    status = Column(CaseInsensitiveEnum(TaskStatus, 50), default=TaskStatus.PENDING, index=True)
+    priority = Column(CaseInsensitiveEnum(TaskPriority, 50), default=TaskPriority.MEDIUM, index=True)
     progress = Column(Float, default=0.0)  # 0.0-100.0
 
     # 时间信息

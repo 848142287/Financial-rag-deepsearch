@@ -4,13 +4,12 @@
 """
 
 import re
-import logging
-from typing import Dict, List, Any, Optional, Tuple
+from app.core.structured_logging import get_structured_logger
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
-import asyncio
 from collections import defaultdict
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 @dataclass

@@ -4,18 +4,15 @@
 """
 
 import asyncio
-import logging
-from typing import Dict, List, Callable, Any, Optional, Set
+from app.core.structured_logging import get_structured_logger
+from typing import Dict, List, Any, Optional, Set
 from collections import defaultdict
 from datetime import datetime
-import json
-import weakref
-from dataclasses import asdict
 
 from .event_types import Event, EventType
 from .state_manager import StateManager
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class EventHandler:
@@ -62,7 +59,7 @@ class EventBus:
             "handlers_registered": 0,
             "errors": 0
         }
-        self.logger = logging.getLogger(__name__)
+        self.logger = get_structured_logger(__name__)  # 使用统一日志框架
 
     def set_state_manager(self, state_manager: StateManager) -> None:
         """设置状态管理器"""
@@ -252,7 +249,7 @@ class EventPublisher:
 
     def __init__(self, event_bus: EventBus):
         self.event_bus = event_bus
-        self.logger = logging.getLogger(__name__)
+        self.logger = get_structured_logger(__name__)  # 使用统一日志框架
 
     async def system_started(self, component: str, **kwargs) -> None:
         """发布系统启动事件"""

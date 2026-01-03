@@ -1,14 +1,8 @@
 """
-向量化文档任务
-已移动到 vector_tasks.py，此文件为了兼容性保留
+向量化文档任务 - 占位符文件
+用于避免Celery自动发现任务时的导入错误
 """
 
 from .vector_tasks import *
 
-# 为了向后兼容，重新导出主要函数
-__all__ = [
-    'vectorize_content',
-    'create_document_embeddings',
-    'search_similar_documents',
-    'update_document_vectors'
-]
+__all__ = ['placeholder_task']

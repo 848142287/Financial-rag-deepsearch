@@ -3,16 +3,14 @@
 为Financial RAG系统提供结构化日志记录
 """
 
-import logging
-import logging.handlers
+from app.core.structured_logging import get_structured_logger
+logger = get_structured_logger(__name__)
 import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
 
 from app.core.config import settings
-
 
 class StructuredFormatter(logging.Formatter):
     """结构化日志格式化器"""
@@ -44,7 +42,6 @@ class StructuredFormatter(logging.Formatter):
 
         return json.dumps(log_entry, ensure_ascii=False)
 
-
 class ColoredFormatter(logging.Formatter):
     """彩色控制台日志格式化器"""
 
@@ -68,7 +65,6 @@ class ColoredFormatter(logging.Formatter):
 
         # 自定义格式
         return f"{record.asctime} | {record.levelname:8} | {record.name:20} | {record.getMessage()}"
-
 
 def setup_logging(
     log_level: str = None,
@@ -122,20 +118,24 @@ def setup_logging(
 
     # 文件处理器
     if enable_file:
-        # 确保日志目录存在
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # 确保日志目录存在 (添加异常处理)
+        try:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 使用RotatingFileHandler支持日志轮转
-        file_handler = logging.handlers.RotatingFileHandler(
-            filename=log_file,
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
-            encoding='utf-8'
-        )
-        file_handler.setLevel(getattr(logging, log_level.upper()))
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
+            # 使用RotatingFileHandler支持日志轮转
+            file_handler = logging.handlers.RotatingFileHandler(
+                filename=log_file,
+                maxBytes=10 * 1024 * 1024,  # 10MB
+                backupCount=5,
+                encoding='utf-8'
+            )
+            file_handler.setLevel(getattr(logging, log_level.upper()))
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+        except (PermissionError, OSError, FileNotFoundError):
+            # 如果无法创建目录或文件，跳过文件日志
+            pass
 
     # 设置特定模块的日志级别
     logging.getLogger("uvicorn").setLevel(logging.INFO)
@@ -148,11 +148,9 @@ def setup_logging(
         logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
         logging.getLogger("requests.packages.urllib3").setLevel(logging.WARNING)
 
-
 def get_logger(name: str) -> logging.Logger:
     """获取指定名称的日志记录器"""
     return logging.getLogger(name)
-
 
 def log_with_context(
     logger: logging.Logger,
@@ -187,7 +185,6 @@ def log_with_context(
         setattr(record, key, value)
 
     logger.handle(record)
-
 
 # 性能监控装饰器
 def log_performance(logger: logging.Logger = None):
@@ -238,7 +235,6 @@ def log_performance(logger: logging.Logger = None):
 
         return wrapper
     return decorator
-
 
 # 异步性能监控装饰器
 def log_async_performance(logger: logging.Logger = None):
@@ -291,7 +287,6 @@ def log_async_performance(logger: logging.Logger = None):
         return wrapper
     return decorator
 
-
 # 初始化日志配置
 def init_logging():
     """初始化日志配置"""
@@ -302,7 +297,6 @@ def init_logging():
         enable_file=True,
         enable_structured=not settings.debug  # 生产环境使用结构化日志
     )
-
 
 # 自动初始化
 init_logging()

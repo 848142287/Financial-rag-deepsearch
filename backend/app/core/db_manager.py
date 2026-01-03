@@ -7,7 +7,6 @@
 import sys
 import os
 import argparse
-from pathlib import Path
 
 # 添加项目路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))

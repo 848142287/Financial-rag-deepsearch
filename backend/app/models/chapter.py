@@ -2,7 +2,7 @@
 章节和目录数据模型
 """
 
-from sqlalchemy import Column, Integer, String, Text, BigInteger, DateTime, ForeignKey, Enum, JSON, Float
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum, JSON, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -23,8 +23,8 @@ class Chapter(Base):
     __tablename__ = "chapters"
 
     id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
-    parent_id = Column(Integer, ForeignKey("chapters.id"), nullable=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    parent_id = Column(Integer, ForeignKey("chapters.id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True, index=True)
 
     # 章节基本信息
     chapter_type = Column(Enum(ChapterType), nullable=False, index=True)
@@ -65,8 +65,8 @@ class ChapterTableOfContents(Base):
     __tablename__ = "chapter_toc"
 
     id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
-    chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=False, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    chapter_id = Column(Integer, ForeignKey("chapters.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
 
     # 目录结构
     toc_path = Column(String(2000))  # 完整的目录路径 (1.1.2.3)
@@ -98,9 +98,9 @@ class ChapterCrossReference(Base):
     __tablename__ = "chapter_cross_references"
 
     id = Column(Integer, primary_key=True, index=True)
-    source_chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=False, index=True)
-    target_chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=False, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
+    source_chapter_id = Column(Integer, ForeignKey("chapters.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    target_chapter_id = Column(Integer, ForeignKey("chapters.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
 
     # 引用类型
     reference_type = Column(String(50), nullable=False)  # see_also, reference, cites, related

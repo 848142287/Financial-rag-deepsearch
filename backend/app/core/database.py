@@ -3,18 +3,18 @@
 """
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from sqlalchemy.pool import StaticPool
-import logging
+from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
+from app.core.structured_logging import get_structured_logger
+from contextlib import contextmanager
+from typing import Generator, AsyncGenerator
 
 from app.core.config import settings
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class Base(DeclarativeBase):
     """SQLAlchemy 2.0+ 基础模型类"""
-    pass
 
 
 # 创建数据库引擎
@@ -125,3 +125,47 @@ async def check_database_connection():
     except Exception as e:
         logger.error(f"Database connection failed: {e}")
         return False
+
+
+# 显式事务上下文管理器
+@contextmanager
+def transaction_scope(db: Session) -> Generator:
+    """
+    显式事务上下文管理器
+
+    Usage:
+        with transaction_scope(db) as session:
+            session.execute(...)
+            # 自动提交或回滚
+    """
+    try:
+        yield db
+        db.commit()
+        logger.debug("Transaction committed successfully")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Transaction rolled back due to error: {e}")
+        raise
+
+
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def transaction_scope_async(db_session) -> AsyncGenerator:
+    """
+    异步事务上下文管理器
+
+    Usage:
+        async with transaction_scope_async(db) as session:
+            await session.execute(...)
+            # 自动提交或回滚
+    """
+    try:
+        yield db_session
+        await db_session.commit()
+        logger.debug("Async transaction committed successfully")
+    except Exception as e:
+        await db_session.rollback()
+        logger.error(f"Async transaction rolled back due to error: {e}")
+        raise

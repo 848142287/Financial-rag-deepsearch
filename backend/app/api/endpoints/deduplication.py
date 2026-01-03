@@ -2,19 +2,17 @@
 文档去重检查API端点
 """
 
-import logging
-from typing import Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, Depends
-from fastapi.responses import JSONResponse
+from app.core.structured_logging import get_structured_logger
+from typing import Dict, Any
+from fastapi import APIRouter, HTTPException
 
 from app.schemas.deduplication import (
     DocumentDuplicateCheck, DocumentDuplicateResponse,
-    UploadDeduplicationDecision, DocumentUploadRequest, EnhancedUploadResponse
+    UploadDeduplicationDecision, DocumentUploadRequest
 )
 from app.services.document_deduplication import document_deduplication_service
-from app.core.database import get_db
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 router = APIRouter()
 
 @router.post("/check-duplicate")

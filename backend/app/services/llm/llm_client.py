@@ -3,11 +3,10 @@ LLM客户端
 简化版本，用于快速启动
 """
 
-from typing import List, Dict, Any, Optional
-import asyncio
-import logging
+from typing import List, Dict, Any
+from app.core.structured_logging import get_structured_logger
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class LLMClient:
@@ -15,16 +14,16 @@ class LLMClient:
 
     def __init__(self):
         self.models = {
-            "gpt-3.5-turbo": {"available": True, "type": "chat"},
+            "glm-4.7": {"available": True, "type": "chat"},
+            "glm-4.6v": {"available": True, "type": "multimodal"},
             "gpt-4": {"available": True, "type": "chat"},
-            "text-embedding-v3": {"available": True, "type": "embedding"},
-            "qwen-vl-max": {"available": True, "type": "multimodal"}
+            "text-embedding-v3": {"available": True, "type": "embedding"}
         }
 
     async def chat_completion(
         self,
         messages: List[Dict[str, str]],
-        model: str = "gpt-3.5-turbo",
+        model: str = "glm-4.7",
         temperature: float = 0.7,
         max_tokens: int = 1000,
         **kwargs
@@ -81,7 +80,7 @@ class LLMClient:
         self,
         image_data: bytes,
         prompt: str,
-        model: str = "qwen-vl-max",
+        model: str = "glm-4.6v",
         **kwargs
     ) -> Dict[str, Any]:
         """图像分析"""
@@ -106,7 +105,7 @@ class LLMClient:
 llm_client = LLMClient()
 
 # 兼容性函数
-async def chat_with_llm(prompt: str, model: str = "gpt-3.5-turbo") -> str:
+async def chat_with_llm(prompt: str, model: str = "glm-4.7") -> str:
     """简化版聊天函数"""
     messages = [{"role": "user", "content": prompt}]
     response = await llm_client.chat_completion(messages, model)

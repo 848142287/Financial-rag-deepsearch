@@ -384,7 +384,7 @@ async def websocket_endpoint(
 
                 # 集成RAG系统生成回复
                 try:
-                    # DEPRECATED: Use ConsolidatedRAGService instead - from app.services.consolidated_rag_service import ConsolidatedRAGService agentic_rag_service
+                    # DEPRECATED: Use UnifiedRAGService instead - from app.services.rag.unified_rag_entry import UnifiedRAGService agentic_rag_service
 
                     # 获取对话历史作为上下文
                     context_messages = await agentic_rag_service._get_conversation_context(conversation_id)

@@ -13,7 +13,8 @@ class EmbeddingModel(str, Enum):
     QWEN_TEXT_V4 = "text-embedding-v4"            # 1536维
     QWEN_TEXT_V3 = "text-embedding-v3"            # 1024维
     BGE_M3 = "bge-m3"                             # 1024维 (预留)
-    DEFAULT = QWEN25_VL
+    BGE_LARGE_ZH = "bge-large-zh-v1.5"            # 1024维 (本地模型)
+    DEFAULT = BGE_LARGE_ZH
 
 
 @dataclass
@@ -56,6 +57,13 @@ EMBEDDING_MODEL_CONFIGS: Dict[str, EmbeddingModelConfig] = {
         normalize=True,
         support_multimodal=False
     ),
+    EmbeddingModel.BGE_LARGE_ZH.value: EmbeddingModelConfig(
+        model_name=EmbeddingModel.BGE_LARGE_ZH.value,
+        dimension=1024,
+        max_sequence_length=512,
+        normalize=True,
+        support_multimodal=False
+    ),
 }
 
 
@@ -66,7 +74,7 @@ class VectorStoreConfig:
     primary_model: str = EmbeddingModel.DEFAULT.value
 
     # 备用模型（降级使用）
-    backup_model: str = EmbeddingModel.QWEN_TEXT_V4.value
+    backup_model: str = EmbeddingModel.QWEN25_VL.value
 
     # Milvus 连接配置
     host: str = "localhost"

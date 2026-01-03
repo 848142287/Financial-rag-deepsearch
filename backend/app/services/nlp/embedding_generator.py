@@ -3,13 +3,13 @@
 为文档处理流水线提供向量生成功能
 """
 
-import logging
-from typing import List, Dict, Any, Optional
+from app.core.structured_logging import get_structured_logger
+from typing import List
 import numpy as np
 
-from app.services.embedding_service import embedding_service
+from app.services.qwen_embedding_service import qwen_embedding_service as embedding_service
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class EmbeddingGenerator:

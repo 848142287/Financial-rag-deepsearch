@@ -4,7 +4,7 @@
 提供文档处理失败时的重试功能
 """
 
-import logging
+from app.core.structured_logging import get_structured_logger
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -12,10 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_db
 from app.services.retry_service import (
-    document_retry_service, ErrorType
+    RetryService as document_retry_service, ErrorType
 )
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 router = APIRouter(tags=["文档重试"])
 
 # 请求模型
@@ -70,8 +70,9 @@ async def retry_document(
     try:
         logger.info(f"收到文档重试请求: document_id={document_id}, force_retry={request.force_retry}")
 
-        # 执行重试
-        result = await document_retry_service.retry_document_processing(
+        # 创建服务实例并执行重试
+        retry_service = document_retry_service()
+        result = await retry_service.retry_document_processing(
             document_id=document_id,
             db=db,
             force_retry=request.force_retry
@@ -111,8 +112,9 @@ async def batch_retry_documents(
                 except ValueError:
                     logger.warning(f"无效的错误类型: {error_type_str}")
 
-        # 执行批量重试
-        result = await document_retry_service.batch_retry_failed_documents(
+        # 创建服务实例并执行批量重试
+        retry_service = document_retry_service()
+        result = await retry_service.batch_retry_failed_documents(
             db=db,
             limit=request.limit,
             error_types=error_types
@@ -148,8 +150,9 @@ async def get_failed_documents_summary(
     try:
         logger.info(f"获取失败文档汇总: limit={limit}")
 
-        # 获取汇总信息
-        summary = await document_retry_service.get_failed_documents_summary(
+        # 创建服务实例并获取汇总信息
+        retry_service = document_retry_service()
+        summary = await retry_service.get_failed_documents_summary(
             db=db,
             limit=limit
         )
@@ -166,7 +169,10 @@ async def get_retry_strategies():
     获取可用的重试策略信息
     """
     try:
-        from app.services.document_retry_service import RetryStrategy, ErrorType
+        from app.services.retry_service import RetryStrategy, ErrorType
+
+        # 创建服务实例以获取max_retries
+        retry_service_instance = document_retry_service()
 
         return {
             "error_types": [
@@ -197,7 +203,7 @@ async def get_retry_strategies():
                 }
                 for strategy in RetryStrategy
             ],
-            "max_retries": document_retry_service.max_retries
+            "max_retries": retry_service_instance.max_retries
         }
 
     except Exception as e:
@@ -219,8 +225,9 @@ async def cleanup_old_retries(
     try:
         logger.info(f"清理旧重试记录: days={days}")
 
-        # 执行清理
-        cleaned_count = await document_retry_service.cleanup_old_retries(
+        # 创建服务实例并执行清理
+        retry_service = document_retry_service()
+        cleaned_count = await retry_service.cleanup_old_retries(
             db=db,
             days=days
         )

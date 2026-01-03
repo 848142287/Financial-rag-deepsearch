@@ -4,7 +4,6 @@
 """
 
 import pymysql
-import json
 import os
 from typing import Dict, List, Any
 

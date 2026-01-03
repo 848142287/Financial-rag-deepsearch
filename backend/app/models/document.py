@@ -2,14 +2,14 @@
 文档数据模型
 """
 
-from sqlalchemy import Column, Integer, String, Text, BigInteger, DateTime, ForeignKey, Enum, JSON, Float
+from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, BigInteger, ForeignKey, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
 from datetime import datetime
 
 from app.core.database import Base
-
+from app.core.enum_utils import CaseInsensitiveEnum
 
 class DocumentStatus(str, enum.Enum):
     UPLOADING = "uploading"
@@ -31,7 +31,6 @@ class DocumentStatus(str, enum.Enum):
     KNOWLEDGE_GRAPH_FAILED = "knowledge_graph_failed"
     PERMANENTLY_FAILED = "permanently_failed"
 
-
 class Document(Base):
     """文档表"""
     __tablename__ = "documents"
@@ -45,7 +44,7 @@ class Document(Base):
     content_type = Column(String(100))
     file_hash = Column(String(64), index=True)  # MD5 hash for file deduplication
     content_hash = Column(String(64), index=True)  # SHA-256 hash for content deduplication
-    status = Column(Enum(DocumentStatus, values_callable=lambda obj: [e.value for e in obj]), default=DocumentStatus.UPLOADING, index=True)
+    status = Column(CaseInsensitiveEnum(DocumentStatus, 50), default=DocumentStatus.UPLOADING, index=True)
     task_id = Column(String(255), index=True)  # Celery任务ID
     processing_mode = Column(String(50))  # 处理模式
     error_message = Column(Text)  # 错误信息
@@ -60,7 +59,31 @@ class Document(Base):
     # Additional fields for enhanced document management
     mime_type = Column(String(100))  # MIME类型
     storage_path = Column(String(1000))  # 存储路径
-    parsed_content = Column(JSON)  # 解析后的内容
+    parsed_content = Column(Text)  # 解析后的内容（改为Text支持大文本）
+
+    # 异步处理状态字段
+    vectorization_status = Column(String(50), default="pending")  # 向量化状态
+    vectorization_started_at = Column(DateTime(timezone=True))
+    vectorization_completed_at = Column(DateTime(timezone=True))
+    vectors_count = Column(Integer, default=0)  # 向量数量
+
+    kg_extraction_status = Column(String(50), default="pending")  # 知识图谱抽取状态
+    kg_extraction_started_at = Column(DateTime(timezone=True))
+    kg_extraction_completed_at = Column(DateTime(timezone=True))
+    entities_count = Column(Integer, default=0)  # 实体数量
+    relationships_count = Column(Integer, default=0)  # 关系数量
+    metrics_count = Column(Integer, default=0)  # 指标数量
+
+    enrichment_status = Column(String(50), default="pending")  # 总体enrichment状态
+    enrichment_started_at = Column(DateTime(timezone=True))
+    enrichment_completed_at = Column(DateTime(timezone=True))
+    enrichment_error = Column(Text)  # enrichment错误信息
+
+    # MySQL存储字段（双存储：Redis + MySQL）
+    redis_key = Column(String(500))  # Redis存储key
+    redis_ttl = Column(Integer, default=2592000)  # Redis过期时间（30天）
+    mysql_storage_path = Column(String(1000))  # MySQL存储路径
+    storage_sync_status = Column(String(50), default="pending")  # 存储同步状态
 
     # 关系
     chunks = relationship("DocumentChunk", back_populates="document")
@@ -68,13 +91,12 @@ class Document(Base):
     def __repr__(self):
         return f"<Document(id={self.id}, title='{self.title}', status='{self.status}')>"
 
-
 class DocumentChunk(Base):
     """文档分块表"""
     __tablename__ = "document_chunks"
 
     id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     chunk_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
     embedding_id = Column(String(255), index=True)
@@ -87,15 +109,14 @@ class DocumentChunk(Base):
     def __repr__(self):
         return f"<DocumentChunk(id={self.id}, document_id={self.document_id}, chunk_index={self.chunk_index})>"
 
-
 class DocumentStorageIndex(Base):
     """文档存储索引表"""
     __tablename__ = "document_storage_index"
 
     id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     storage_key = Column(String(500), nullable=False, index=True)
-    storage_type = Column(String(50), nullable=False)  # memory, redis, mongodb, filesystem
+    storage_type = Column(String(50), nullable=False)  # memory, redis, filesystem
     location = Column(String(1000))
     size_bytes = Column(BigInteger)
     storage_metadata = Column(JSON)
@@ -108,14 +129,13 @@ class DocumentStorageIndex(Base):
     def __repr__(self):
         return f"<DocumentStorageIndex(id={self.id}, document_id={self.document_id}, storage_type='{self.storage_type}')>"
 
-
 class VectorStorage(Base):
     """向量存储记录表"""
     __tablename__ = "vector_storage"
 
     id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
-    chunk_id = Column(Integer, ForeignKey("document_chunks.id"), index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    chunk_id = Column(Integer, ForeignKey("document_chunks.id", ondelete="SET NULL", onupdate="CASCADE"), index=True)
     vector_id = Column(String(255), nullable=False, unique=True)  # Milvus中的向量ID
     embedding_data = Column(JSON, nullable=True)  # 向量数据
     model_provider = Column(String(50), index=True)  # 模型提供商
@@ -131,15 +151,13 @@ class VectorStorage(Base):
     def __repr__(self):
         return f"<VectorStorage(id={self.id}, document_id={self.document_id}, vector_id='{self.vector_id}')>"
 
-
-
 class DocumentTask(Base):
     """文档任务模型"""
     __tablename__ = "document_tasks"
 
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(String(255), unique=True, index=True, nullable=False)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True)
     status = Column(String(50), default="pending")
     progress = Column(Float, default=0.0)
     error_message = Column(Text, nullable=True)

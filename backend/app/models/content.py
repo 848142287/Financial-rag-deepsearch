@@ -64,7 +64,7 @@ class ImageContent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
-    chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=True, index=True)
+    # chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=True, index=True)  # 暂时注释，chapters表不存在
     chunk_id = Column(Integer, ForeignKey("document_chunks.id"), nullable=True, index=True)
 
     # 图像基本信息
@@ -107,7 +107,7 @@ class ImageContent(Base):
 
     # 关系
     document = relationship("Document", backref="images")
-    chapter = relationship("Chapter", backref="images")
+    # chapter = relationship("Chapter", backref="images")  # 暂时注释，chapters表不存在
     chunk = relationship("DocumentChunk", backref="images")
 
     def __repr__(self):
@@ -120,7 +120,7 @@ class ChartContent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
-    chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=True, index=True)
+    # chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=True, index=True)  # 暂时注释，chapters表不存在
     image_id = Column(Integer, ForeignKey("image_contents.id"), nullable=True, index=True)
 
     # 图表基本信息
@@ -158,7 +158,7 @@ class ChartContent(Base):
 
     # 关系
     document = relationship("Document", backref="charts")
-    chapter = relationship("Chapter", backref="charts")
+    # chapter = relationship("Chapter", backref="charts")  # 暂时注释，chapters表不存在
     image = relationship("ImageContent", backref="charts")
 
     def __repr__(self):
@@ -171,7 +171,7 @@ class TableContent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
-    chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=True, index=True)
+    # chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=True, index=True)  # 暂时注释，chapters表不存在
     image_id = Column(Integer, ForeignKey("image_contents.id"), nullable=True, index=True)
 
     # 表格基本信息
@@ -215,7 +215,7 @@ class TableContent(Base):
 
     # 关系
     document = relationship("Document", backref="tables")
-    chapter = relationship("Chapter", backref="tables")
+    # chapter = relationship("Chapter", backref="tables")  # 暂时注释，chapters表不存在
     image = relationship("ImageContent", backref="tables")
 
     def __repr__(self):
@@ -228,7 +228,7 @@ class FormulaContent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
-    chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=True, index=True)
+    # chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=True, index=True)  # 暂时注释，chapters表不存在
     image_id = Column(Integer, ForeignKey("image_contents.id"), nullable=True, index=True)
 
     # 公式基本信息
@@ -277,7 +277,7 @@ class FormulaContent(Base):
 
     # 关系
     document = relationship("Document", backref="formulas")
-    chapter = relationship("Chapter", backref="formulas")
+    # chapter = relationship("Chapter", backref="formulas")  # 暂时注释，chapters表不存在
     image = relationship("ImageContent", backref="formulas")
 
     def __repr__(self):

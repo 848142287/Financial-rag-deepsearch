@@ -3,12 +3,12 @@ CSV文件解析器
 处理CSV格式的数据文件
 """
 
-import logging
+from app.core.structured_logging import get_structured_logger
 import pandas as pd
 from typing import Dict, List, Any, Optional
 from .base import BaseFileParser, ParseResult
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class CSVParser(BaseFileParser):

@@ -3,25 +3,14 @@
 使用SQLAlchemy代替Alembic进行数据库管理
 """
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
-import logging
+import json
+from app.core.structured_logging import get_structured_logger
 
 from app.core.database import Base, engine
-from app.models import document, conversation, admin
-from app.models.task import Task, TaskDependency, TaskExecutionLog
-from app.models.chapter import Chapter, ChapterTableOfContents, ChapterCrossReference
-from app.models.content import (
-    ImageContent, ChartContent, TableContent, FormulaContent, ContentRelationship
-)
-from app.models.knowledge_graph import (
-    KnowledgeGraphNode, KnowledgeGraphRelation, KnowledgeGraphPath,
-    KnowledgeGraphEntity, KnowledgeGraphCluster
-)
-from app.models.user_sql import User
-from app.core.config import settings
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class DatabaseInitializer:
@@ -92,12 +81,11 @@ class DatabaseInitializer:
 
     def _insert_system_configs(self, session):
         """插入系统配置"""
-        from app.models.admin import SystemConfig
 
         configs = [
             ("max_file_size", "50", "最大文件大小(MB)"),
             ("supported_file_types", '["pdf", "docx", "doc", "xlsx", "xls", "pptx", "ppt", "txt", "md"]', "支持的文件类型"),
-            ("embedding_model", "qwen2.5-vl-embedding", "嵌入模型"),
+            ("embedding_model", "text-embedding-v4", "嵌入模型"),
             ("llm_model", "deepseek-chat", "大语言模型"),
             ("rerank_model", "qwen3-rerank", "重排序模型"),
             ("multimodal_model", "qwen-vl-plus", "多模态模型"),
@@ -111,7 +99,7 @@ class DatabaseInitializer:
             ("similarity_threshold", "0.7", "相似度阈值"),
             ("enable_knowledge_graph", "true", "启用知识图谱"),
             ("enable_content_analysis", "true", "启用内容分析"),
-            ("storage_layers", '["memory", "redis", "mongodb", "filesystem"]', "存储层配置")
+            ("storage_layers", '["memory", "redis", "filesystem"]', "存储层配置")
         ]
 
         for config_key, config_value, description in configs:
@@ -132,7 +120,6 @@ class DatabaseInitializer:
         """插入示例数据（可选）"""
         # 这里可以插入一些示例数据
         # 例如：示例文档、示例对话等
-        pass
 
     def create_indexes(self):
         """创建额外的索引"""

@@ -3,10 +3,11 @@
 """
 
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any
 from collections import defaultdict, deque
 from app.middleware.base_middleware import BaseMiddleware
-from app.core.logging import logger
+from app.core.structured_logging import get_structured_logger
+logger = get_structured_logger(__name__)
 from app.core.config import get_settings
 
 class MetricsMiddleware(BaseMiddleware):

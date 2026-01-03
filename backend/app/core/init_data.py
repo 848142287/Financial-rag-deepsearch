@@ -5,18 +5,17 @@
 """
 
 import asyncio
-import logging
+from app.core.structured_logging import get_structured_logger
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
 
 # 设置日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 # 添加项目路径
 import sys
@@ -86,7 +85,7 @@ class DataInitializer:
             "max_chunks_per_document": "1000",
 
             # AI模型配置
-            "embedding_model": "qwen2.5-vl-embedding",
+            "embedding_model": "text-embedding-v4",
             "llm_model": "deepseek-chat",
             "rerank_model": "qwen3-rerank",
             "multimodal_model": "qwen-vl-plus",

@@ -3,18 +3,16 @@
 实现集中式状态管理，维护系统全局状态
 """
 
-import asyncio
-import logging
-from typing import Dict, List, Any, Optional, Set
+from app.core.structured_logging import get_structured_logger
+from typing import Dict, Any, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-import json
 from threading import Lock
 
 from .event_types import Event, EventType
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class ComponentStatus(Enum):

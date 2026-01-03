@@ -3,20 +3,17 @@
 负责通过自然语言接口从数据库提取内容并转换为知识库格式
 """
 
-import io
 import requests
-import pandas as pd
-from typing import Dict, Optional, Tuple, List, Any
+from typing import Dict, Optional, Tuple, List
 from datetime import datetime
-import logging
+from app.core.structured_logging import get_structured_logger
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 from app.models.document import Document, DocumentStatus
-from app.core.database import get_db
 from app.services.consolidated_document_service import ConsolidatedDocumentService as DocumentProcessor
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class DatabaseQueryService:

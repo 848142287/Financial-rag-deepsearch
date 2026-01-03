@@ -3,13 +3,14 @@
 提供结构化、高质量的答案生成
 """
 
-import logging
+from app.core.structured_logging import get_structured_logger
 from typing import Dict, Any, List
 import json
 
-from app.services.llm_service import LLMService
+from app.services.llm.unified_llm_service import LLMService
+from app.services.optimized_prompt_builder import optimized_prompt_builder
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class EnhancedAnswerService:
@@ -110,20 +111,61 @@ class EnhancedAnswerService:
         return normalized
     
     def _build_context(self, query: str, results: List[Dict]) -> str:
-        """构建LLM上下文"""
+        """构建LLM上下文（优化版本）"""
+        try:
+            # 使用优化的上下文构建
+            context_parts = []
+
+            # 动态确定上下文数量
+            num_results = min(len(results), 8)  # 最多8个
+
+            for i, result in enumerate(results[:num_results], 1):
+                score = result.get('similarity_percentage', result.get('score', 0))
+                content = result.get('content', '')
+
+                # 智能截断：保留完整句子
+                truncated = self._smart_truncate(content, max_length=700)
+
+                context_part = f"""【片段{i}】相关度:{score:.0f}%
+{truncated}
+"""
+                context_parts.append(context_part)
+
+            return "\n\n".join(context_parts)
+
+        except Exception as e:
+            logger.warning(f"优化上下文构建失败，使用原始方法: {e}")
+            return self._build_context_fallback(query, results)
+
+    def _smart_truncate(self, text: str, max_length: int) -> str:
+        """智能截断：保留完整句子"""
+        if len(text) <= max_length:
+            return text
+
+        # 找到最近的句号
+        truncated = text[:max_length]
+        last_period = truncated.rfind('。')
+
+        if last_period > max_length * 0.7:  # 句号位置合理
+            return text[:last_period + 1]
+
+        return truncated + "..."
+
+    def _build_context_fallback(self, query: str, results: List[Dict]) -> str:
+        """降级方法：原始上下文构建"""
         context_parts = []
-        
+
         for i, result in enumerate(results[:5], 1):  # 只使用前5个结果
             score = result.get('similarity_percentage', result.get('score', 0))
             content = result.get('content', '')[:800]  # 限制长度
-            
+
             context_part = f"""
 【文档片段{i}】(相关度: {score}%)
 标题: {result.get('title', 'N/A')}
 内容: {content}
 """
             context_parts.append(context_part)
-        
+
         return "\n".join(context_parts)
     
     async def _generate_structured_answer_with_llm(
@@ -132,10 +174,41 @@ class EnhancedAnswerService:
         context: str,
         results: List[Dict]
     ) -> Dict[str, Any]:
-        """使用LLM生成结构化答案 - 优化版提示词"""
+        """使用LLM生成结构化答案（优化版提示词）"""
 
-        # 优化的系统提示词 - 更明确和结构化
-        system_prompt = """你是一个资深的金融领域研究专家和知识分析师，具备以下核心能力：
+        try:
+            # 尝试使用DeepSeek优化的提示词
+            system_prompt, user_prompt = optimized_prompt_builder.build_deepseek_optimized_prompt(
+                query=query,
+                context=context,
+                include_reasoning=False  # JSON格式不需要推理步骤
+            )
+
+            # 添加JSON输出要求到用户提示词
+            user_prompt += """
+
+
+## 输出格式
+请以严格的JSON格式返回，包含以下字段：
+1. summary (string): 核心答案一句话总结（不超过80字）
+2. main_points (array): 3-5个关键要点，每点不超过120字
+3. detailed_explanation (string): 深度分析，400-600字
+4. examples (array): 具体案例或数据
+
+JSON示例：
+{
+    "summary": "核心答案总结",
+    "main_points": ["要点1", "要点2", "要点3"],
+    "detailed_explanation": "详细分析说明",
+    "examples": ["案例1", "案例2"]
+}"""
+
+            logger.info("使用DeepSeek优化的提示词")
+
+        except Exception as e:
+            logger.warning(f"优化提示词构建失败，使用原始方法: {e}")
+            # 降级到原始方法
+            system_prompt = """你是一个资深的金融领域研究专家和知识分析师，具备以下核心能力：
 
 ## 专业领域
 - 金融数据分析与解读
@@ -154,35 +227,16 @@ class EnhancedAnswerService:
 你必须以JSON格式返回，包含以下字段：
 
 1. **summary** (string): 核心答案一句话总结（不超过80字）
-   - 直接回答问题的核心
-   - 包含关键数字或结论
-
 2. **main_points** (array): 3-5个关键要点
-   - 每个要点独立完整
-   - 按重要性排序
-   - 每点不超过120字
-
-3. **detailed_explanation** (string): 深度分析
-   - 背景说明（如有必要）
-   - 详细的数据分析
-   - 实体间的关联分析
-   - 趋势或影响说明
-   - 建议或启示（如适用）
-   - 400-600字
-
+3. **detailed_explanation** (string): 深度分析（400-600字）
 4. **examples** (array): 具体案例或数据
-   - 从文档中提取的实际例子
-   - 关键数据点
-   - 对比分析
 
 ## 质量标准
 - 如果文档信息不足，明确说明缺失的部分
 - 使用专业但易懂的语言
-- 保持客观中立的立场
-- 利用知识图谱中的实体关系进行深度推理"""
+- 保持客观中立的立场"""
 
-        # 优化的用户提示词 - 更好的上下文组织
-        user_prompt = f"""# 查询任务
+            user_prompt = f"""# 查询任务
 
 ## 用户问题
 {query}
@@ -197,29 +251,13 @@ class EnhancedAnswerService:
 2. 识别关键实体、数据和关系
 3. 综合多个文档的信息进行分析
 4. 提炼核心答案并提供深度见解
-5. 如果信息矛盾，说明不同来源
 
 ## 输出要求
 请以严格的JSON格式返回答案，确保：
 - JSON格式正确，可被解析
 - 所有必需字段都存在
 - 内容基于提供的文档
-- 使用中文回答
-
-JSON格式示例：
-{{
-    "summary": "核心答案的精炼总结",
-    "main_points": [
-        "关键要点1，包含具体数据",
-        "关键要点2，说明重要关联",
-        "关键要点3，提供深度洞察"
-    ],
-    "detailed_explanation": "详细的分析说明，包括背景、数据分析、实体关系、影响评估等",
-    "examples": [
-        "具体案例或数据点1",
-        "具体案例或数据点2"
-    ]
-}}"""
+- 使用中文回答"""
 
         try:
             messages = [

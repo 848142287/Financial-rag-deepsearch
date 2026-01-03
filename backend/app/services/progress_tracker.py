@@ -3,10 +3,8 @@
 用于长时间运行的查询任务的进度管理
 """
 
-import asyncio
 import json
-import logging
-import time
+from app.core.structured_logging import get_structured_logger
 import uuid
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
@@ -15,9 +13,10 @@ from enum import Enum
 
 from app.core.redis_client import get_redis_client
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
+# TODO: TaskStatus → core.TaskStatus
 class TaskStatus(Enum):
     """任务状态"""
     PENDING = "pending"          # 等待中

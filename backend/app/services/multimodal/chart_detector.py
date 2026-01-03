@@ -3,11 +3,11 @@
 识别和分析各种图表类型
 """
 
-import logging
+from app.core.structured_logging import get_structured_logger
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class ChartDetector:

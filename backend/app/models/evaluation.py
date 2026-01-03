@@ -2,7 +2,7 @@
 评估相关数据模型
 """
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float
 from sqlalchemy.sql import func
 from app.core.database import Base
 

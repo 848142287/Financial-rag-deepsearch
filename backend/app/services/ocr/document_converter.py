@@ -10,9 +10,8 @@
 """
 
 import os
-import io
 import tempfile
-from typing import Optional, List
+from typing import Optional
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -35,11 +34,6 @@ except ImportError:
     PYMUPDF_AVAILABLE = False
 
 try:
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.pagesizes import letter, A4
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.lib.units import inch
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False

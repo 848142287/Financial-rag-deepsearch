@@ -10,15 +10,14 @@
 """
 
 import re
-import logging
+from app.core.structured_logging import get_structured_logger
 from typing import Dict, List, Optional, Any
 from pathlib import Path
-from datetime import datetime
 
-from .base import BaseFileParser, ParseResult, DocumentChunk
+from ..base import BaseFileParser, ParseResult, DocumentChunk
 from .advanced.enhanced_markdown_splitter import EnhancedMarkdownSplitter, SplitConfig
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class TextParser(BaseFileParser):

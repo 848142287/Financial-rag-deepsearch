@@ -3,9 +3,8 @@ Neo4j 知识图谱统一配置
 确保所有服务使用一致的配置和ID生成策略
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Optional, Set
 from enum import Enum
-import uuid
 
 
 class GraphEntityType(str, Enum):
@@ -25,6 +24,7 @@ class GraphEntityType(str, Enum):
     EVENT = "Event"
     CONCEPT = "Concept"
     REGULATION = "Regulation"
+    POLICY = "Policy"
     TIME = "Time"
 
 

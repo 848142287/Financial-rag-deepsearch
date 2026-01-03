@@ -3,14 +3,11 @@
 分析图片类型、提取图片中的文本、识别图表等
 """
 
-import logging
+from app.core.structured_logging import get_structured_logger
 import re
-from typing import Dict, Any, List, Optional
-from PIL import Image
-import base64
-import io
+from typing import Dict, Any, List
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 class ImageAnalyzer:
